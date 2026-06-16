@@ -1,0 +1,1073 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>IES-TEXA Post Approvals — Anthology FINN Partners</title>
+  <style>
+    :root {
+      --navy: #1a1a2e;
+      --c-draft: #9E9E9E;
+      --c-internal: #4285F4;
+      --c-local: #FF9800;
+      --c-corporate: #9C27B0;
+      --c-approved: #4CAF50;
+      --c-published: #1B5E20;
+      --border: #e3e5ea;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: 'Inter', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+      background: #fff;
+      color: #1a1a2e;
+      font-size: 14px;
+    }
+    /* ---------- Header ---------- */
+    header {
+      background: var(--navy);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 24px;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .logo { font-weight: 800; font-size: 17px; letter-spacing: 0.4px; }
+    .logo span { color: #9aa0b4; font-weight: 500; font-size: 12px; margin-left: 10px; }
+    .user-chip { font-size: 12px; color: #c9cde0; }
+    /* ---------- Toolbar ---------- */
+    .toolbar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+      padding: 14px 24px;
+      border-bottom: 1px solid var(--border);
+      background: #fafbfc;
+    }
+    .toolbar button, .toolbar select {
+      font: inherit;
+      padding: 8px 14px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: #fff;
+      cursor: pointer;
+    }
+    .toolbar button:hover { background: #f0f2f5; }
+    #monthLabel { font-size: 17px; font-weight: 700; min-width: 170px; text-align: center; }
+    .toolbar .filters { margin-left: auto; display: flex; gap: 10px; align-items: center; }
+    .toolbar label { font-size: 12px; color: #666; }
+    /* ---------- Calendar ---------- */
+    .calendar-wrap { padding: 16px 24px 80px 24px; }
+    .calendar {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      border-left: 1px solid var(--border);
+      border-top: 1px solid var(--border);
+    }
+    .cal-dow {
+      padding: 8px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #888;
+      background: #fafbfc;
+      border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      text-align: center;
+    }
+    .cal-day {
+      min-height: 110px;
+      border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border);
+      padding: 6px;
+      vertical-align: top;
+    }
+    .cal-day.other-month { background: #fafbfc; }
+    .cal-day .daynum { font-size: 12px; color: #888; margin-bottom: 4px; }
+    .cal-day.today .daynum {
+      display: inline-block; background: var(--navy); color: #fff;
+      border-radius: 50%; width: 22px; height: 22px; line-height: 22px; text-align: center;
+    }
+    .post-card {
+      border: 1px solid var(--border);
+      border-left-width: 4px;
+      border-radius: 6px;
+      background: #fff;
+      padding: 5px 6px;
+      margin-bottom: 5px;
+      cursor: pointer;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+      overflow: hidden;
+    }
+    .post-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.12); }
+    .post-card .pc-title {
+      font-weight: 600; font-size: 12px; white-space: nowrap;
+      overflow: hidden; text-overflow: ellipsis;
+    }
+    .post-card .pc-meta { display: flex; align-items: center; gap: 5px; margin-top: 3px; }
+    .post-card .pc-media-link { display: inline-block; font-size: 10px; color: #1a73e8; font-weight: 600; text-decoration: none; margin-top: 3px; }
+    .post-card .pc-media-link:hover { text-decoration: underline; }
+    .post-card .pc-thumb {
+      width: 100%; height: 44px; object-fit: cover; border-radius: 4px; margin-top: 4px;
+      display: block;
+    }
+    .post-card .pc-publish-btn {
+      display: block; width: 100%; margin-top: 5px; padding: 3px 6px;
+      font-size: 10px; font-weight: 700; cursor: pointer; border-radius: 4px;
+      background: #4CAF50; color: #fff; border: none;
+    }
+    .post-card .pc-publish-btn:hover { background: #388E3C; }
+    .post-card-done { filter: saturate(0.4); }
+    .badge {
+      display: inline-block; color: #fff; font-size: 10px; font-weight: 700;
+      padding: 2px 7px; border-radius: 10px; white-space: nowrap;
+    }
+    .platform-ico { font-size: 10px; font-weight: 800; color: #555; background: #eef0f4;
+      border-radius: 4px; padding: 1px 4px; }
+    /* ---------- FAB ---------- */
+    .fab {
+      position: fixed; right: 28px; bottom: 28px; width: 58px; height: 58px;
+      border-radius: 50%; background: var(--navy); color: #fff; font-size: 30px;
+      border: none; cursor: pointer; box-shadow: 0 4px 14px rgba(0,0,0,0.3);
+      z-index: 40; line-height: 58px; padding: 0;
+    }
+    .fab:hover { background: #2c2c4a; }
+    /* ---------- Slide-in panel ---------- */
+    .overlay {
+      position: fixed; inset: 0; background: rgba(15,15,30,0.45);
+      opacity: 0; pointer-events: none; transition: opacity .2s; z-index: 50;
+    }
+    .overlay.open { opacity: 1; pointer-events: auto; }
+    .panel {
+      position: fixed; top: 0; right: -640px; width: 620px; max-width: 96vw; height: 100vh;
+      background: #fff; box-shadow: -6px 0 24px rgba(0,0,0,0.2);
+      transition: right .25s ease; z-index: 60; display: flex; flex-direction: column;
+    }
+    .panel.open { right: 0; }
+    .panel-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 22px; border-bottom: 1px solid var(--border); background: #fafbfc;
+    }
+    .panel-header h2 { margin: 0; font-size: 16px; }
+    .panel-body { overflow-y: auto; padding: 20px 22px; flex: 1; }
+    .panel-footer {
+      padding: 14px 22px; border-top: 1px solid var(--border); background: #fafbfc;
+      display: flex; gap: 10px; justify-content: flex-end;
+    }
+    .field { margin-bottom: 16px; }
+    .field label { display: block; font-size: 12px; font-weight: 700; color: #555; margin-bottom: 6px; }
+    .field input[type=text], .field input[type=date], .field input[type=datetime-local],
+    .field textarea, .field select {
+      width: 100%; font: inherit; padding: 9px 11px; border: 1px solid var(--border);
+      border-radius: 8px; background: #fff;
+    }
+    .field textarea { resize: vertical; }
+    .platform-checks { display: flex; gap: 16px; flex-wrap: wrap; }
+    .platform-checks label { font-weight: 500; font-size: 13px; display: flex; align-items: center; gap: 6px; }
+    .media-preview img { max-width: 100%; max-height: 220px; border-radius: 8px; border: 1px solid var(--border); margin-top: 8px; }
+    .media-preview a { color: #1a73e8; font-weight: 600; }
+    .internal-box {
+      background: #FFF8E1; border: 1px solid #FFE082; border-radius: 10px; padding: 14px;
+      margin-bottom: 18px;
+    }
+    .internal-box .ib-label {
+      font-size: 11px; font-weight: 800; color: #8d6e00; text-transform: uppercase;
+      letter-spacing: 0.05em; margin-bottom: 8px;
+    }
+    .section-title {
+      font-size: 13px; font-weight: 800; text-transform: uppercase; letter-spacing: 0.05em;
+      color: #555; margin: 22px 0 10px 0; border-top: 1px solid var(--border); padding-top: 18px;
+    }
+    .comment {
+      border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
+      background: #fff;
+    }
+    .comment.internal { background: #FFFDF2; border-color: #FFE082; }
+    .comment .c-meta { font-size: 11px; color: #888; margin-bottom: 4px; }
+    .comment .c-text { font-size: 13px; line-height: 1.5; white-space: pre-wrap; }
+    .approval-row {
+      display: flex; align-items: flex-start; gap: 10px;
+      border-bottom: 1px solid #f0f1f4; padding: 8px 0; font-size: 13px;
+    }
+    .approval-row .ar-status { font-weight: 700; min-width: 130px; }
+    .approval-row .ar-notes { color: #666; font-size: 12px; margin-top: 2px; white-space: pre-wrap; }
+    .btn {
+      font: inherit; font-weight: 600; padding: 10px 18px; border-radius: 8px;
+      border: 1px solid var(--border); background: #fff; cursor: pointer;
+    }
+    .btn.primary { background: var(--navy); border-color: var(--navy); color: #fff; }
+    .btn.primary:hover { background: #2c2c4a; }
+    .btn.small { padding: 7px 12px; font-size: 12px; }
+    .notif-panel {
+      background: #EEF4FF; border: 1px solid #c5d6f5; border-radius: 10px;
+      padding: 14px; margin-top: 12px;
+    }
+    .notif-panel h4 { margin: 0 0 10px 0; font-size: 13px; }
+    .notif-panel .np-approver { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 13px; }
+    .notif-panel .np-sched { margin: 12px 0; font-size: 13px; display: flex; flex-direction: column; gap: 8px; }
+    /* ---------- Spinner & toast ---------- */
+    .spinner-veil {
+      position: fixed; inset: 0; background: rgba(255,255,255,0.6); z-index: 100;
+      display: none; align-items: center; justify-content: center;
+    }
+    .spinner-veil.show { display: flex; }
+    .spinner {
+      width: 44px; height: 44px; border: 4px solid #d8dbe4; border-top-color: var(--navy);
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.65; } }
+    .toast {
+      position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
+      background: var(--navy); color: #fff; padding: 12px 22px; border-radius: 10px;
+      font-size: 14px; z-index: 110; opacity: 0; transition: opacity .25s; pointer-events: none;
+    }
+    .toast.show { opacity: 1; }
+    /* ---------- Hover preview tooltip ---------- */
+    .preview-tooltip {
+      position: fixed; z-index: 200; background: #fff;
+      border: 1px solid #e0e0e0; border-radius: 10px;
+      box-shadow: 0 8px 28px rgba(0,0,0,0.18); padding: 12px;
+      max-width: 300px; display: none;
+    }
+    .preview-tooltip .pt-title { font-size: 13px; font-weight: 700; margin-bottom: 6px; color: #1a1a2e; }
+    .preview-tooltip .pt-platforms { font-size: 11px; color: #555; margin-bottom: 3px; }
+    .preview-tooltip .pt-date { font-size: 11px; color: #888; margin-bottom: 8px; }
+    .preview-tooltip img { max-width: 276px; max-height: 276px; border-radius: 6px; display: block; border: 1px solid #e0e0e0; }
+    .preview-tooltip .pt-link { font-size: 12px; color: #1a73e8; font-weight: 600; text-decoration: none; display: inline-block; margin-top: 4px; }
+    .preview-tooltip .pt-link:hover { text-decoration: underline; }
+    .preview-tooltip .pt-meta { font-size: 11px; color: #888; margin-top: 4px; word-break: break-all; }
+    @media (max-width: 720px) {
+      .cal-day { min-height: 80px; }
+      .panel { width: 100vw; }
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <div class="logo">ANTHOLOGY <span>FINN PARTNERS · IES-TEXA Post Approvals</span></div>
+  <div class="user-chip">Signed in as <?= userName ?> (<?= userEmail ?>)</div>
+</header>
+
+<div class="toolbar">
+  <button id="btnPrev" title="Previous month">&#8592;</button>
+  <div id="monthLabel"></div>
+  <button id="btnNext" title="Next month">&#8594;</button>
+  <button id="btnToday">Today</button>
+  <span id="badgeLocal" style="display:none;background:#FF9800;color:#fff;font-size:12px;font-weight:700;padding:5px 12px;border-radius:20px;margin-right:4px;animation:pulse 1.5s infinite;"></span>
+  <button id="btnSendLocal" class="btn small primary" style="display:none;background:#FF9800;border-color:#FF9800;margin-right:10px;">Send to Local Client</button>
+  <span id="badgeCorp" style="display:none;background:#6366F1;color:#fff;font-size:12px;font-weight:700;padding:5px 12px;border-radius:20px;margin-right:4px;animation:pulse 1.5s infinite;"></span>
+  <button id="btnSendCorp" class="btn small primary" style="display:none;background:#6366F1;border-color:#6366F1;margin-right:10px;">Send to Corporate</button>
+  <span id="badgeRevisingCorp" style="display:none;background:#6366F1;color:#fff;font-size:12px;font-weight:700;padding:5px 12px;border-radius:20px;margin-right:4px;animation:pulse 1.5s infinite;"></span>
+  <button id="btnReSendAllCorp" class="btn small primary" style="display:none;background:#6366F1;border-color:#6366F1;">Re-send to Corporate</button>
+  <div class="filters">
+    <label for="filterStatus">Status</label>
+    <select id="filterStatus">
+      <option value="">All statuses</option>
+      <option value="Draft">Draft</option>
+      <option value="Revising">Revising</option>
+      <option value="Local_Client_Review">Local Client Review</option>
+      <option value="Corporate_Review">Corporate Review</option>
+      <option value="Approved">Approved</option>
+      <option value="Published">Published</option>
+    </select>
+    <label for="filterPlatform">Platform</label>
+    <select id="filterPlatform">
+      <option value="">All platforms</option>
+      <option value="LinkedIn">LinkedIn</option>
+      <option value="Facebook">Facebook</option>
+      <option value="Instagram">Instagram</option>
+    </select>
+  </div>
+</div>
+
+<div class="calendar-wrap">
+  <div class="calendar" id="calendar"></div>
+</div>
+
+<button class="fab" id="btnCreate" title="Create post">+</button>
+
+<div class="overlay" id="overlay"></div>
+
+<div class="panel" id="panel">
+  <div class="panel-header">
+    <h2 id="panelTitle">Post</h2>
+    <button class="btn small" id="btnClosePanel">&#10005; Close</button>
+  </div>
+  <div class="panel-body" id="panelBody">
+
+    <div class="field">
+      <label for="fTitle">Title</label>
+      <input type="text" id="fTitle" placeholder="Post title">
+    </div>
+
+    <div class="field">
+      <label for="fCopy">Post copy</label>
+      <textarea id="fCopy" rows="6" placeholder="Write the post copy…"></textarea>
+    </div>
+
+    <div class="field">
+      <label>Platform(s)</label>
+      <div class="platform-checks">
+        <label><input type="checkbox" class="fPlatform" value="LinkedIn"> LinkedIn</label>
+        <label><input type="checkbox" class="fPlatform" value="Facebook"> Facebook</label>
+        <label><input type="checkbox" class="fPlatform" value="Instagram"> Instagram</label>
+      </div>
+    </div>
+
+    <div class="field">
+      <label>Media assets</label>
+      <div style="font-size:12px;color:#666;margin-bottom:10px;">Enter one URL per line. First line = primary image shown on calendar.</div>
+      <div style="margin-bottom:10px;">
+        <label style="font-size:11px;font-weight:700;color:#555;display:block;margin-bottom:4px;">LinkedIn</label>
+        <textarea id="fLinkedIn" rows="2" placeholder="One URL per line…" style="width:100%;font:inherit;padding:9px 11px;border:1px solid var(--border);border-radius:8px;resize:vertical;"></textarea>
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="font-size:11px;font-weight:700;color:#555;display:block;margin-bottom:4px;">Facebook</label>
+        <textarea id="fFacebook" rows="2" placeholder="One URL per line…" style="width:100%;font:inherit;padding:9px 11px;border:1px solid var(--border);border-radius:8px;resize:vertical;"></textarea>
+      </div>
+      <div style="margin-bottom:10px;">
+        <label style="font-size:11px;font-weight:700;color:#555;display:block;margin-bottom:4px;">Instagram</label>
+        <textarea id="fInstagram" rows="2" placeholder="One URL per line…" style="width:100%;font:inherit;padding:9px 11px;border:1px solid var(--border);border-radius:8px;resize:vertical;"></textarea>
+      </div>
+      <div>
+        <label style="font-size:11px;font-weight:700;color:#555;display:block;margin-bottom:4px;">Carousel / additional (all platforms)</label>
+        <textarea id="fCarousel" rows="2" placeholder="One URL per line…" style="width:100%;font:inherit;padding:9px 11px;border:1px solid var(--border);border-radius:8px;resize:vertical;"></textarea>
+      </div>
+    </div>
+
+    <div class="field">
+      <label for="fDate">Scheduled date</label>
+      <input type="date" id="fDate">
+    </div>
+
+    <div class="field">
+      <label>Status</label>
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <span class="badge" id="statusBadge" style="font-size:12px;padding:5px 12px;">—</span>
+        <select id="fStatus" style="width:auto;font:inherit;padding:8px 11px;border:1px solid var(--border);border-radius:8px;">
+          <option value="Draft">Draft</option>
+          <option value="Revising">Revising (agency revising)</option>
+          <option value="Local_Client_Review">Local Client Review</option>
+          <option value="Corporate_Review">Corporate Review</option>
+          <option value="Approved">Approved</option>
+          <option value="Published">Published</option>
+        </select>
+      </div>
+      <div style="font-size:11px;color:#888;margin-top:4px;">
+        Status is saved with the post. Notifications are queued — use "Send pending" in the toolbar to send.
+      </div>
+    </div>
+
+    <div class="internal-box">
+      <div class="ib-label">Internal — not visible to client</div>
+      <div class="field" style="margin-bottom:10px;">
+        <label for="fNotes">Internal notes</label>
+        <textarea id="fNotes" rows="3" placeholder="Agency-only notes…"></textarea>
+      </div>
+      <div id="internalComments"></div>
+      <div style="display:flex;gap:8px;margin-top:8px;">
+        <input type="text" id="newInternalComment" placeholder="Add internal comment…"
+               style="flex:1;font:inherit;padding:8px 11px;border:1px solid #FFE082;border-radius:8px;">
+        <button class="btn small" id="btnAddInternal">Add</button>
+      </div>
+    </div>
+
+    <div class="section-title">Client-visible comments</div>
+    <div id="clientComments"></div>
+    <div style="display:flex;gap:8px;margin-top:8px;">
+      <input type="text" id="newClientComment" placeholder="Reply to client (visible to client)…"
+             style="flex:1;font:inherit;padding:8px 11px;border:1px solid var(--border);border-radius:8px;">
+      <button class="btn small" id="btnAddClientReply">Reply</button>
+    </div>
+
+    <div class="section-title">Approval history &amp; change requests</div>
+    <div id="approvalHistory"></div>
+
+  </div>
+  <div class="panel-footer">
+    <button class="btn" id="btnCancel">Cancel</button>
+    <button class="btn primary" id="btnSave">Save post</button>
+  </div>
+</div>
+
+<div class="spinner-veil" id="spinnerVeil"><div class="spinner"></div></div>
+<div class="toast" id="toast"></div>
+<div class="preview-tooltip" id="previewTooltip">
+  <div class="pt-title" id="ptTitle"></div>
+  <div class="pt-platforms" id="ptPlatforms" style="display:none;"></div>
+  <div class="pt-date" id="ptDate" style="display:none;"></div>
+  <img id="ptImg" src="" alt="" style="display:none;">
+  <a class="pt-link" id="ptLink" href="#" target="_blank" rel="noopener noreferrer" style="display:none;"></a>
+  <div class="pt-meta" id="ptMeta"></div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var STATUS_COLORS = {
+    'Draft': '#9E9E9E',
+    'Internal_Review': '#9E9E9E',
+    'Revising': '#0D9488',
+    'Local_Client_Review': '#FF9800',
+    'Awaiting_Corporate': '#6366F1',
+    'Corporate_Review': '#9C27B0',
+    'Approved': '#4CAF50',
+    'Published': '#1B5E20'
+  };
+  // Statuses where cards are visually muted (done / no action needed).
+  var DONE_STATUSES = { 'Approved': true, 'Published': true };
+  var STATUS_LABELS = {
+    'Draft': 'Draft',
+    'Internal_Review': 'Internal Review',
+    'Revising': 'Revising',
+    'Local_Client_Review': 'Local Client Review',
+    'Awaiting_Corporate': 'Send to Corporate',
+    'Corporate_Review': 'Corporate Review',
+    'Approved': 'Approved',
+    'Published': 'Published'
+  };
+  var PLATFORM_ABBR = { 'LinkedIn': 'in', 'Facebook': 'fb', 'Instagram': 'ig' };
+
+  var state = {
+    posts: [],
+    current: new Date(),      // month being viewed
+    activePost: null,         // post object currently open in the panel
+    pendingApprovers: [],     // kept for future use
+    openPostIdOnLoad: '<?= openPostId ?>'
+  };
+
+  // ------------------------------------------------------------------
+  // Utilities
+  // ------------------------------------------------------------------
+  function $(id) { return document.getElementById(id); }
+
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function showSpinner(on) {
+    $('spinnerVeil').className = on ? 'spinner-veil show' : 'spinner-veil';
+  }
+
+  var toastTimer = null;
+  function toast(msg) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.className = 'toast show';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = 'toast'; }, 6000);
+  }
+
+  function fail(err) {
+    showSpinner(false);
+    var msg = (err && err.message) ? err.message : String(err);
+    toast('Error: ' + msg);
+  }
+
+  function run(fnName) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolve, reject) {
+      var runner = google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(reject);
+      runner[fnName].apply(runner, args);
+    });
+  }
+
+  function classifyMedia(url) {
+    var u = String(url || '').trim();
+    if (!u) return { type: 'none', url: '' };
+    var lower = u.toLowerCase();
+    // Box /shared/static/ URLs are direct download links — treat as images.
+    if (lower.indexOf('box.com/shared/static/') !== -1) return { type: 'image', url: u };
+    if (lower.indexOf('box.com') !== -1) return { type: 'box', url: u };
+    if (lower.indexOf('canva.com') !== -1) return { type: 'canva', url: u };
+    if (/\.(png|jpg|jpeg|gif|webp)(\?.*)?$/.test(lower) || lower.indexOf('s3.amazonaws.com') !== -1) {
+      return { type: 'image', url: u };
+    }
+    return { type: 'link', url: u };
+  }
+
+  function parseDateOnly(value) {
+    // Accepts 'yyyy-MM-dd', 'yyyy-MM-dd HH:mm:ss', or other date strings.
+    var s = String(value || '').trim();
+    if (!s) return null;
+    var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+    var d = new Date(s);
+    return isNaN(d.getTime()) ? null : new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+
+  function ymd(d) {
+    return d.getFullYear() + '-' +
+      ('0' + (d.getMonth() + 1)).slice(-2) + '-' +
+      ('0' + d.getDate()).slice(-2);
+  }
+
+  // ------------------------------------------------------------------
+  // Calendar rendering
+  // ------------------------------------------------------------------
+  function renderCalendar() {
+    var cal = $('calendar');
+    var y = state.current.getFullYear();
+    var m = state.current.getMonth();
+    var monthNames = ['January','February','March','April','May','June','July',
+                      'August','September','October','November','December'];
+    $('monthLabel').textContent = monthNames[m] + ' ' + y;
+
+    var filterStatus = $('filterStatus').value;
+    var filterPlatform = $('filterPlatform').value;
+
+    var postsByDay = {};
+    state.posts.forEach(function (p) {
+      if (filterStatus && p.Status !== filterStatus) return;
+      if (filterPlatform && String(p.Platform || '').indexOf(filterPlatform) === -1) return;
+      var d = parseDateOnly(p.Scheduled_Date);
+      var key = d ? ymd(d) : 'unscheduled';
+      if (!postsByDay[key]) postsByDay[key] = [];
+      postsByDay[key].push(p);
+    });
+
+    var html = '';
+    var dows = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    dows.forEach(function (d) { html += '<div class="cal-dow">' + d + '</div>'; });
+
+    var first = new Date(y, m, 1);
+    var start = new Date(y, m, 1 - first.getDay());
+    var today = new Date();
+    var todayKey = ymd(today);
+
+    for (var i = 0; i < 42; i++) {
+      var day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+      var inMonth = day.getMonth() === m;
+      var key = ymd(day);
+      var classes = 'cal-day' + (inMonth ? '' : ' other-month') + (key === todayKey ? ' today' : '');
+      html += '<div class="' + classes + '"><div class="daynum">' + day.getDate() + '</div>';
+      (postsByDay[key] || []).forEach(function (p) {
+        html += postCardHtml(p);
+      });
+      html += '</div>';
+    }
+    cal.innerHTML = html;
+
+    // Bind card clicks via delegation on the calendar container.
+    // Clicks on the media link, tooltip, or publish button should NOT open the post detail panel.
+    cal.addEventListener('click', function (e) {
+      if (e.target.closest && (e.target.closest('.pc-media-link') || e.target.closest('#previewTooltip'))) return;
+      // "Mark Published" quick-action.
+      var publishBtn = e.target.closest ? e.target.closest('.pc-publish-btn') : null;
+      if (publishBtn) {
+        e.stopPropagation();
+        var pid = publishBtn.getAttribute('data-postid');
+        markPublished(pid, publishBtn);
+        return;
+      }
+      var card = e.target.closest ? e.target.closest('.post-card') : null;
+      if (!card) return;
+      openPost(card.getAttribute('data-id'));
+    });
+
+    // Hide timer — lets the mouse move from card to tooltip without closing it.
+    var _ttHide = null;
+    function scheduleHide() {
+      _ttHide = setTimeout(function () {
+        $('previewTooltip').style.display = 'none';
+      }, 250);
+    }
+    function cancelHide() { clearTimeout(_ttHide); }
+
+    function showTooltipForCard(card, e) {
+      var pid = card.getAttribute('data-id');
+      var post = null;
+      for (var pi = 0; pi < state.posts.length; pi++) {
+        if (state.posts[pi].ID === pid) { post = state.posts[pi]; break; }
+      }
+      if (!post) return;
+      var url = getPrimaryMediaUrl(post);
+      if (!url) return;
+      cancelHide();
+      var tt = $('previewTooltip');
+      var media = classifyMedia(url);
+      // Title
+      $('ptTitle').textContent = post.Title || '';
+      // Platforms
+      var plats = String(post.Platform || '').split(',').map(function (p) { return p.trim(); }).filter(function (p) { return p; }).join(' · ');
+      if (plats) { $('ptPlatforms').textContent = plats; $('ptPlatforms').style.display = 'block'; }
+      else { $('ptPlatforms').style.display = 'none'; }
+      // Scheduled date
+      var d = parseDateOnly(post.Scheduled_Date);
+      if (d) {
+        var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+        $('ptDate').textContent = months[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+        $('ptDate').style.display = 'block';
+      } else { $('ptDate').style.display = 'none'; }
+      // Media
+      if (media.type === 'image') {
+        $('ptImg').src = url;
+        $('ptImg').style.display = 'block';
+        $('ptLink').style.display = 'none';
+        $('ptMeta').textContent = '';
+      } else {
+        $('ptImg').style.display = 'none';
+        $('ptLink').textContent = media.type === 'box' ? '📦 Open in Box ↗' : '🔗 View media ↗';
+        $('ptLink').href = url;
+        $('ptLink').style.display = 'inline-block';
+        $('ptMeta').textContent = url.length > 55 ? url.slice(0, 52) + '…' : url;
+      }
+      tt.style.display = 'block';
+      positionTooltip(tt, e);
+    }
+
+    // Card hover — use mouseover/mouseout delegation (bubbles, works in GAS sandbox).
+    cal.addEventListener('mouseover', function (e) {
+      var card = e.target.closest ? e.target.closest('.post-card') : null;
+      if (!card) return;
+      var from = e.relatedTarget;
+      if (from && card.contains(from)) return;
+      showTooltipForCard(card, e);
+    });
+    cal.addEventListener('mousemove', function (e) {
+      var card = e.target.closest ? e.target.closest('.post-card') : null;
+      if (!card) return;
+      var tt = $('previewTooltip');
+      if (tt.style.display === 'block') positionTooltip(tt, e);
+    });
+    cal.addEventListener('mouseout', function (e) {
+      var card = e.target.closest ? e.target.closest('.post-card') : null;
+      if (!card) return;
+      var to = e.relatedTarget;
+      if (to && card.contains(to)) return;
+      scheduleHide();
+    });
+
+    // Keep tooltip open when hovering over it so the link can be clicked.
+    var tt = $('previewTooltip');
+    tt.addEventListener('mouseover', function () { cancelHide(); });
+    tt.addEventListener('mouseout', function () { scheduleHide(); });
+  }
+
+  function positionTooltip(tt, e) {
+    var x = e.clientX + 18;
+    var y = e.clientY - 20;
+    var w = tt.offsetWidth || 300;
+    var h = tt.offsetHeight || 300;
+    if (x + w + 8 > window.innerWidth) x = e.clientX - w - 18;
+    if (y + h + 8 > window.innerHeight) y = window.innerHeight - h - 8;
+    if (y < 8) y = 8;
+    tt.style.left = x + 'px';
+    tt.style.top = y + 'px';
+  }
+
+  function getPrimaryMediaUrl(p) {
+    var fields = ['Instagram_URL', 'Facebook_URL', 'LinkedIn_URL', 'Carousel_URLs', 'Media_URL'];
+    for (var i = 0; i < fields.length; i++) {
+      var val = String(p[fields[i]] || '').trim();
+      if (!val) continue;
+      var firstUrl = val.split('\n')[0].trim();
+      if (firstUrl) return firstUrl;
+    }
+    return '';
+  }
+
+  function postCardHtml(p) {
+    var color = STATUS_COLORS[p.Status] || '#9E9E9E';
+    var isDone = !!DONE_STATUSES[p.Status];
+    var primaryUrl = getPrimaryMediaUrl(p);
+    var media = classifyMedia(primaryUrl);
+    var platforms = String(p.Platform || '').split(',')
+      .map(function (x) { return x.trim(); })
+      .filter(function (x) { return x; });
+    var icons = platforms.map(function (pl) {
+      return '<span class="platform-ico">' + esc(PLATFORM_ABBR[pl] || pl.slice(0, 2).toLowerCase()) + '</span>';
+    }).join('');
+    var thumb;
+    if (media.type === 'image') {
+      thumb = '<img class="pc-thumb" src="' + esc(media.url) + '" alt="" onerror="this.style.display=\'none\'">';
+    } else if (primaryUrl) {
+      var linkLabel = media.type === 'box' ? '&#128230; Open in Box &#8599;' : '&#128279; View media &#8599;';
+      thumb = '<a class="pc-media-link" href="' + esc(primaryUrl) + '" target="_blank" rel="noopener noreferrer">' + linkLabel + '</a>';
+    } else {
+      thumb = '';
+    }
+    // "Mark Published" quick-action shown on Approved cards only.
+    var publishBtn = (p.Status === 'Approved')
+      ? '<button class="pc-publish-btn" data-postid="' + esc(p.ID) + '" title="Mark as Published">Mark Published &rarr;</button>'
+      : '';
+    // Revising uses bright yellow — needs dark text for readability.
+    var badgeTextColor = '#ffffff';   // teal Revising (#0D9488) uses white text
+    var cardStyle = 'border-left-color:' + color + ';' + (isDone ? 'opacity:0.55;' : '');
+    return '<div class="post-card' + (isDone ? ' post-card-done' : '') + '" data-id="' + esc(p.ID) + '" style="' + cardStyle + '">' +
+      '<div class="pc-title">' + esc(p.Title || '(untitled)') + '</div>' +
+      '<div class="pc-meta">' +
+      '<span class="badge" style="background:' + color + ';color:' + badgeTextColor + ';">' + esc(STATUS_LABELS[p.Status] || p.Status) + '</span>' +
+      icons + '</div>' + thumb + publishBtn + '</div>';
+  }
+
+  // ------------------------------------------------------------------
+  // Data loading
+  // ------------------------------------------------------------------
+  function loadPosts(thenOpenId) {
+    showSpinner(true);
+    run('api_getPosts').then(function (posts) {
+      state.posts = posts || [];
+      renderCalendar();
+      showSpinner(false);
+      if (thenOpenId) openPost(thenOpenId);
+    }).catch(fail);
+  }
+
+  // ------------------------------------------------------------------
+  // Detail panel
+  // ------------------------------------------------------------------
+  function openPanel() {
+    $('overlay').className = 'overlay open';
+    $('panel').className = 'panel open';
+  }
+  function closePanel() {
+    $('overlay').className = 'overlay';
+    $('panel').className = 'panel';
+    state.activePost = null;
+    // (notification panel removed — batch send via toolbar)
+  }
+
+  function openPost(postId) {
+    showSpinner(true);
+    run('api_getPostDetail', postId).then(function (detail) {
+      showSpinner(false);
+      state.activePost = detail.post;
+      fillPanel(detail.post, detail.approvals, detail.comments);
+      openPanel();
+    }).catch(fail);
+  }
+
+  function openNewPost() {
+    state.activePost = null;
+    fillPanel({
+      ID: '', Title: '', Post_Copy: '', Platform: '', Media_URL: '',
+      LinkedIn_URL: '', Facebook_URL: '', Instagram_URL: '', Carousel_URLs: '',
+      Scheduled_Date: '', Status: 'Draft', Internal_Notes: ''
+    }, [], []);
+    openPanel();
+  }
+
+  function fillPanel(post, approvals, comments) {
+    $('panelTitle').textContent = post.ID ? (post.ID + ' — Edit post') : 'New post';
+    $('fTitle').value = post.Title || '';
+    $('fCopy').value = post.Post_Copy || '';
+    $('fLinkedIn').value = post.LinkedIn_URL || '';
+    $('fFacebook').value = post.Facebook_URL || '';
+    $('fInstagram').value = post.Instagram_URL || '';
+    $('fCarousel').value = post.Carousel_URLs || '';
+    $('fNotes').value = post.Internal_Notes || '';
+
+    var d = parseDateOnly(post.Scheduled_Date);
+    $('fDate').value = d ? ymd(d) : '';
+
+    var platforms = String(post.Platform || '').split(',').map(function (x) { return x.trim(); });
+    var checks = document.querySelectorAll('.fPlatform');
+    for (var i = 0; i < checks.length; i++) {
+      checks[i].checked = platforms.indexOf(checks[i].value) !== -1;
+    }
+
+    updateStatusBadge(post.Status || 'Draft');
+    $('fStatus').value = post.Status || 'Draft';
+    // (notification panel removed — batch send via toolbar)
+    renderComments(comments || []);
+    renderApprovals(approvals || []);
+
+    // New posts can't comment until saved.
+    var saved = !!post.ID;
+    $('btnAddInternal').disabled = !saved;
+    $('btnAddClientReply').disabled = !saved;
+  }
+
+  function updateStatusBadge(status) {
+    var b = $('statusBadge');
+    b.textContent = STATUS_LABELS[status] || status;
+    b.style.background = STATUS_COLORS[status] || '#9E9E9E';
+  }
+
+  function renderComments(comments) {
+    var internalHtml = '';
+    var clientHtml = '';
+    comments.forEach(function (c) {
+      var item = '<div class="comment ' + (c.Comment_Type === 'Internal' ? 'internal' : '') + '">' +
+        '<div class="c-meta">' + esc(c.Author_Name || c.Author_Email) + ' · ' + esc(c.Created_Date) + '</div>' +
+        '<div class="c-text">' + esc(c.Comment_Text) + '</div></div>';
+      if (c.Comment_Type === 'Internal') internalHtml += item;
+      else clientHtml += item;
+    });
+    $('internalComments').innerHTML = internalHtml ||
+      '<div style="color:#998a4d;font-size:12px;">No internal comments yet.</div>';
+    $('clientComments').innerHTML = clientHtml ||
+      '<div style="color:#999;font-size:12px;">No client-visible comments yet.</div>';
+  }
+
+  function renderApprovals(approvals) {
+    if (!approvals.length) {
+      $('approvalHistory').innerHTML = '<div style="color:#999;font-size:12px;">No approval activity yet.</div>';
+      return;
+    }
+    var html = '';
+    approvals.forEach(function (a) {
+      var color = a.Approval_Status === 'Approved' ? '#4CAF50'
+        : a.Approval_Status === 'Changes_Requested' ? '#FF9800' : '#9E9E9E';
+      html += '<div class="approval-row">' +
+        '<div class="ar-status" style="color:' + color + ';">' +
+        esc(String(a.Approval_Status).replace(/_/g, ' ')) + '</div>' +
+        '<div style="flex:1;">' +
+        '<div><strong>' + esc(a.Approver_Name || a.Approver_Email) + '</strong> · ' +
+        esc(String(a.Stage).replace(/_/g, ' ')) + ' stage' +
+        (a.Decision_Date ? ' · ' + esc(a.Decision_Date) : '') + '</div>' +
+        (a.Decision_Notes ? '<div class="ar-notes">&ldquo;' + esc(a.Decision_Notes) + '&rdquo;</div>' : '') +
+        '</div></div>';
+    });
+    $('approvalHistory').innerHTML = html;
+  }
+
+  // ------------------------------------------------------------------
+  // Saving
+  // ------------------------------------------------------------------
+  function collectPostData() {
+    var platforms = [];
+    var checks = document.querySelectorAll('.fPlatform');
+    for (var i = 0; i < checks.length; i++) {
+      if (checks[i].checked) platforms.push(checks[i].value);
+    }
+    return {
+      ID: state.activePost ? state.activePost.ID : '',
+      Title: $('fTitle').value.trim(),
+      Post_Copy: $('fCopy').value,
+      Platform: platforms.join(', '),
+      LinkedIn_URL: $('fLinkedIn').value.trim(),
+      Facebook_URL: $('fFacebook').value.trim(),
+      Instagram_URL: $('fInstagram').value.trim(),
+      Carousel_URLs: $('fCarousel').value.trim(),
+      Scheduled_Date: $('fDate').value,
+      Internal_Notes: $('fNotes').value,
+      Status: $('fStatus').value
+    };
+  }
+
+  function savePost() {
+    var data = collectPostData();
+    if (!data.Title) { toast('Please enter a title.'); return; }
+    var oldStatus = state.activePost ? state.activePost.Status : null;
+    // Capture any pending comment text before the async save clears the panel.
+    var pendingInternal = ($('newInternalComment') && $('newInternalComment').value.trim()) || '';
+    var pendingClient   = ($('newClientComment')   && $('newClientComment').value.trim())   || '';
+    showSpinner(true);
+    run('api_savePost', data).then(function (post) {
+      state.activePost = post;
+      updateStatusBadge(post.Status);
+      var msg = 'Post saved.';
+      // Refresh batch badge whenever status changes to a send-required stage.
+      var batchStatuses = ['Local_Client_Review', 'Awaiting_Corporate', 'Corporate_Review'];
+      if (post.Status !== oldStatus && batchStatuses.indexOf(post.Status) !== -1) {
+        var stageLabel = post.Status === 'Awaiting_Corporate' ? 'Corporate'
+          : post.Status === 'Corporate_Review' ? 'Corporate' : 'Local Client';
+        msg += ' Use "Send to ' + stageLabel + '" in the toolbar to notify approvers.';
+        loadPendingBatch();
+      }
+      // Auto-save any comments the user typed but didn't explicitly submit.
+      var commentSaves = [];
+      if (pendingInternal && post.ID) {
+        commentSaves.push(run('api_addComment', post.ID, pendingInternal, 'Internal'));
+      }
+      if (pendingClient && post.ID) {
+        commentSaves.push(run('api_addComment', post.ID, pendingClient, 'Client_Reply'));
+      }
+      if (commentSaves.length) {
+        return Promise.all(commentSaves).then(function () {
+          if ($('newInternalComment')) $('newInternalComment').value = '';
+          if ($('newClientComment'))   $('newClientComment').value   = '';
+          showSpinner(false);
+          toast(msg);
+          loadPosts();
+          closePanel();
+        });
+      }
+      showSpinner(false);
+      toast(msg);
+      loadPosts();
+      closePanel();
+    }).catch(fail);
+  }
+
+  // ------------------------------------------------------------------
+  // Status changes & notification panel
+  // ------------------------------------------------------------------
+  // ------------------------------------------------------------------
+  // Pending batch notifications
+  // ------------------------------------------------------------------
+  function loadPendingBatch() {
+    run('api_getPendingBatch').then(function (res) {
+      var localCount        = (res && typeof res.localCount        === 'number') ? res.localCount        : 0;
+      var corpCount         = (res && typeof res.corpCount         === 'number') ? res.corpCount         : 0;
+      var revisingByCorpCount = (res && typeof res.revisingByCorpCount === 'number') ? res.revisingByCorpCount : 0;
+
+      var badgeLocal    = $('badgeLocal');
+      var btnLocal      = $('btnSendLocal');
+      var badgeCorp     = $('badgeCorp');
+      var btnCorp       = $('btnSendCorp');
+      var badgeRevCorp  = $('badgeRevisingCorp');
+      var btnReSendAll  = $('btnReSendAllCorp');
+
+      if (localCount > 0) {
+        badgeLocal.textContent = '⚠️ ' + localCount + ' ready — send to Local!';
+        badgeLocal.style.display = 'inline-block';
+        btnLocal.style.display = 'inline-block';
+      } else {
+        badgeLocal.style.display = 'none';
+        btnLocal.style.display = 'none';
+      }
+      if (corpCount > 0) {
+        badgeCorp.textContent = '⚠️ ' + corpCount + ' ready — send to Corporate!';
+        badgeCorp.style.display = 'inline-block';
+        btnCorp.style.display = 'inline-block';
+      } else {
+        badgeCorp.style.display = 'none';
+        btnCorp.style.display = 'none';
+      }
+      if (revisingByCorpCount > 0) {
+        badgeRevCorp.textContent = '🔄 ' + revisingByCorpCount + ' revising (corp)';
+        badgeRevCorp.style.display = 'inline-block';
+        btnReSendAll.style.display = 'inline-block';
+      } else {
+        badgeRevCorp.style.display = 'none';
+        btnReSendAll.style.display = 'none';
+      }
+    }).catch(function (err) {
+      console.error('loadPendingBatch failed:', err && err.message ? err.message : String(err));
+    });
+  }
+
+  function sendBatchForStage(stage, label) {
+    if (!confirm('Send all pending ' + label + ' notifications now?')) return;
+    showSpinner(true);
+    run('api_sendBatch', stage).then(function (res) {
+      showSpinner(false);
+      toast(res.sent + ' notification' + (res.sent !== 1 ? 's' : '') + ' sent to ' + label + '.');
+      loadPendingBatch();
+    }).catch(fail);
+  }
+
+  function reSendAllToCorporate() {
+    if (!confirm('Re-send all corporate-revised posts back to corporate review?\n\nLocal client will receive a FYI email for each post. Use "Send to Corporate" in the toolbar to send the review request emails.')) return;
+    var btn = $('btnReSendAllCorp');
+    if (btn) btn.disabled = true;
+    showSpinner(true);
+    run('api_agencyReSendAllToCorporate').then(function (res) {
+      showSpinner(false);
+      if (btn) btn.disabled = false;
+      toast(res.message || 'Done.');
+      loadPosts();
+      loadPendingBatch();
+    }).catch(function (err) {
+      if (btn) btn.disabled = false;
+      fail(err);
+    });
+  }
+
+  function markPublished(postId, btn) {
+    if (!confirm('Mark this post as Published?')) return;
+    btn.disabled = true;
+    showSpinner(true);
+    run('api_changeStatus', postId, 'Published').then(function () {
+      showSpinner(false);
+      toast('Post marked as Published.');
+      loadPosts();
+      loadPendingBatch();
+    }).catch(function (err) {
+      btn.disabled = false;
+      fail(err);
+    });
+  }
+
+  // ------------------------------------------------------------------
+  // Comments
+  // ------------------------------------------------------------------
+  function addComment(inputId, type) {
+    if (!state.activePost || !state.activePost.ID) return;
+    var input = $(inputId);
+    var text = input.value.trim();
+    if (!text) return;
+    showSpinner(true);
+    run('api_addComment', state.activePost.ID, text, type).then(function () {
+      input.value = '';
+      return run('api_getPostDetail', state.activePost.ID);
+    }).then(function (detail) {
+      showSpinner(false);
+      renderComments(detail.comments || []);
+      renderApprovals(detail.approvals || []);
+      toast('Comment added.');
+    }).catch(fail);
+  }
+
+  // ------------------------------------------------------------------
+  // Event wiring
+  // ------------------------------------------------------------------
+  $('btnPrev').addEventListener('click', function () {
+    state.current = new Date(state.current.getFullYear(), state.current.getMonth() - 1, 1);
+    renderCalendar();
+  });
+  $('btnNext').addEventListener('click', function () {
+    state.current = new Date(state.current.getFullYear(), state.current.getMonth() + 1, 1);
+    renderCalendar();
+  });
+  $('btnToday').addEventListener('click', function () {
+    state.current = new Date();
+    renderCalendar();
+  });
+  $('filterStatus').addEventListener('change', renderCalendar);
+  $('filterPlatform').addEventListener('change', renderCalendar);
+  $('btnCreate').addEventListener('click', openNewPost);
+  $('btnClosePanel').addEventListener('click', closePanel);
+  $('btnCancel').addEventListener('click', closePanel);
+  $('overlay').addEventListener('click', closePanel);
+  $('btnSave').addEventListener('click', savePost);
+  $('btnSendLocal').addEventListener('click', function () { sendBatchForStage('Local_Client', 'Local Client'); });
+  $('btnSendCorp').addEventListener('click', function () { sendBatchForStage('Corporate', 'Corporate'); });
+  $('btnReSendAllCorp').addEventListener('click', reSendAllToCorporate);
+  $('btnAddInternal').addEventListener('click', function () {
+    addComment('newInternalComment', 'Internal');
+  });
+  $('btnAddClientReply').addEventListener('click', function () {
+    addComment('newClientComment', 'Client_Reply');
+  });
+
+  // Initial load (deep-link support via ?post=POST-001).
+  loadPosts(state.openPostIdOnLoad || null);
+  // Delay badge load by 4 seconds so the initial posts call completes first,
+  // avoiding "too many simultaneous invocations" on the Spreadsheet service.
+  setTimeout(function () { loadPendingBatch(); }, 4000);
+
+  // Auto-refresh: silently reload the calendar every 60 seconds so the agency
+  // sees client actions without having to manually refresh.
+  // Skips refresh when the detail panel is open to avoid disrupting editing.
+  // Delayed 15 seconds on first run to avoid competing with the initial load.
+  setTimeout(function () {
+    setInterval(function () {
+      var panel = $('panel');
+      var panelOpen = panel && panel.className && panel.className.indexOf('open') !== -1;
+      if (panelOpen) return; // don't refresh while editing a post
+      run('api_getPosts').then(function (posts) {
+        state.posts = posts || [];
+        renderCalendar();
+        loadPendingBatch(); // refresh badge in case client actions queued new items
+      }).catch(function () {}); // silent fail — don't surface network errors during background refresh
+    }, 60000);
+  }, 15000);
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,1134 @@
+<!--
+  ClientPortal.html
+  IES-TEXA Social Media Post Review Portal
+  Anthology FINN Partners
+-->
+<script>
+  var TOKEN        = '<?= token ?>';
+  var _RAW_ACCESS_LEVEL = '<?= accessLevel ?>';
+  var IS_CORPORATE = _RAW_ACCESS_LEVEL === 'Corporate';
+  var APPROVER_NAME = '<?= approverName ?>';
+  var APPROVER_EMAIL = '<?= approverEmail ?>';
+  console.log('[Portal] accessLevel="' + _RAW_ACCESS_LEVEL + '" IS_CORPORATE=' + IS_CORPORATE + ' user=' + '<?= approverEmail ?>');
+</script>
+
+<style>
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Arial, sans-serif;
+    background: #f0f2f5;
+    color: #1a1a2e;
+    min-height: 100vh;
+  }
+
+  /* ---- Header ---- */
+  .header {
+    background: #1a1a2e;
+    color: #fff;
+    padding: 14px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+  }
+  .header-brand { font-size: 18px; font-weight: 700; letter-spacing: 0.5px; }
+  .header-sub   { font-size: 12px; color: #9aa0b4; flex: 1; }
+  .header-client { font-size: 13px; color: #c8cfe0; }
+  .header-level {
+    font-size: 11px; font-weight: 700; padding: 3px 9px;
+    border-radius: 12px; background: rgba(255,255,255,0.15);
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+
+  /* ---- Toolbar ---- */
+  .toolbar {
+    background: #fff;
+    border-bottom: 1px solid #e0e0e0;
+    padding: 10px 24px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    position: sticky;
+    top: 0;
+    z-index: 50;
+  }
+  .toolbar button {
+    background: none; border: 1px solid #d0d5dd;
+    border-radius: 6px; padding: 6px 12px;
+    font-size: 13px; font-weight: 600; cursor: pointer;
+    color: #1a1a2e;
+  }
+  .toolbar button:hover { background: #f4f5f7; }
+  #monthLabel { font-size: 16px; font-weight: 700; min-width: 150px; text-align: center; }
+
+  /* ---- Legend ---- */
+  .legend { margin-left: auto; display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #555; }
+  .legend-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  /* ---- Calendar ---- */
+  .cal-wrap { padding: 16px 24px 80px; }
+  .calendar {
+    display: grid;
+    grid-template-columns: repeat(7, 1fr);
+    gap: 1px;
+    background: #d0d5dd;
+    border: 1px solid #d0d5dd;
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .cal-dow {
+    background: #f8f9fb;
+    text-align: center;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: #888;
+    padding: 8px 0;
+  }
+  .cal-day {
+    background: #fff;
+    min-height: 110px;
+    padding: 6px;
+    vertical-align: top;
+  }
+  .cal-day.other-month { background: #f8f9fb; }
+  .cal-day.today { background: #fffbeb; }
+  .daynum {
+    font-size: 11px; font-weight: 700; color: #bbb;
+    margin-bottom: 4px;
+  }
+  .cal-day.today .daynum { color: #FF9800; }
+
+  /* ---- Post cards ---- */
+  .post-card {
+    background: #fff;
+    border-left: 3px solid #ccc;
+    border-radius: 4px;
+    padding: 5px 6px;
+    margin-bottom: 4px;
+    cursor: pointer;
+    font-size: 11px;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+    transition: box-shadow 0.15s;
+  }
+  .post-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.13); }
+  .post-card-done { filter: saturate(0.4); opacity: 0.6; }
+  .pc-title {
+    font-weight: 600; color: #1a1a2e;
+    line-height: 1.3; margin-bottom: 3px;
+    display: -webkit-box; -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .pc-meta { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+  .badge {
+    display: inline-block; color: #fff; font-size: 9px; font-weight: 700;
+    padding: 2px 6px; border-radius: 10px; white-space: nowrap;
+  }
+  .platform-ico {
+    display: inline-block; font-size: 9px; font-weight: 700;
+    background: #e8eaef; color: #555;
+    padding: 1px 4px; border-radius: 3px; text-transform: uppercase;
+  }
+
+  /* ---- Right slide-in panel ---- */
+  .overlay {
+    display: none; position: fixed; inset: 0;
+    background: rgba(0,0,0,0.3); z-index: 100;
+  }
+  .overlay.open { display: block; }
+
+  .panel {
+    position: fixed; top: 0; right: -520px; width: 500px; max-width: 95vw;
+    height: 100vh; background: #fff;
+    box-shadow: -4px 0 24px rgba(0,0,0,0.15);
+    z-index: 110; transition: right 0.28s ease;
+    display: flex; flex-direction: column;
+  }
+  .panel.open { right: 0; }
+
+  .panel-header {
+    padding: 16px 20px 12px;
+    border-bottom: 1px solid #e0e0e0;
+    display: flex; align-items: flex-start; gap: 12px;
+    flex-shrink: 0;
+  }
+  .panel-close {
+    margin-left: auto; background: none; border: none;
+    font-size: 20px; cursor: pointer; color: #888; flex-shrink: 0;
+    padding: 2px 6px;
+  }
+  .panel-close:hover { color: #1a1a2e; }
+
+  .panel-scroll { flex: 1; overflow-y: auto; padding: 0 20px 24px; }
+
+  .panel-status-bar {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 0 10px;
+    border-bottom: 1px solid #f0f2f5;
+    margin-bottom: 14px;
+  }
+  .panel-status-label {
+    font-size: 12px; font-weight: 700; padding: 4px 12px;
+    border-radius: 12px; color: #fff;
+  }
+  .panel-status-msg { font-size: 12px; color: #666; }
+
+  .panel-title { font-size: 18px; font-weight: 700; margin-bottom: 10px; line-height: 1.3; }
+
+  .panel-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 14px; }
+  .panel-pill {
+    font-size: 11px; background: #f0f2f5;
+    padding: 4px 10px; border-radius: 12px; color: #555;
+  }
+
+  .panel-copy {
+    background: #f8f9fb; border: 1px solid #e8eaef;
+    border-radius: 8px; padding: 14px;
+    font-size: 14px; line-height: 1.7; color: #333;
+    margin-bottom: 16px; white-space: pre-wrap;
+  }
+
+  .panel-media { margin-bottom: 16px; }
+  .media-section-label {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.05em; color: #888; margin: 10px 0 5px;
+  }
+  .media-link {
+    display: inline-block; font-size: 13px; color: #1a73e8;
+    font-weight: 600; text-decoration: none; margin: 3px 0;
+  }
+  .media-link:hover { text-decoration: underline; }
+  .media-img {
+    width: 100%; max-height: 200px; object-fit: cover;
+    border-radius: 6px; border: 1px solid #e0e0e0;
+    display: block; margin: 4px 0;
+  }
+
+  /* ---- Discussion ---- */
+  .discussion-head {
+    font-size: 13px; font-weight: 700; color: #1a1a2e;
+    margin: 20px 0 10px;
+    padding-top: 16px; border-top: 1px solid #e8eaef;
+  }
+  .no-comments { font-size: 13px; color: #aaa; padding: 6px 0; }
+  .comment {
+    border-left: 3px solid #e0e0e0; padding: 8px 10px;
+    margin-bottom: 10px; background: #f8f9fb; border-radius: 0 6px 6px 0;
+  }
+  .comment-meta { font-size: 11px; color: #888; margin-bottom: 3px; }
+  .comment-text { font-size: 13px; color: #333; line-height: 1.5; }
+
+  .comment-input-wrap { margin-top: 12px; }
+  .comment-input-wrap .comment-input-label {
+    font-size: 12px; font-weight: 600; color: #666; margin-bottom: 6px; display: block;
+  }
+  .comment-input-wrap textarea {
+    width: 100%; border: 1px solid #d0d5dd; border-radius: 8px;
+    padding: 10px 12px; font: inherit; font-size: 13px;
+    resize: vertical; min-height: 70px;
+  }
+  .comment-input-wrap textarea:focus { outline: none; border-color: #1a1a2e; }
+
+  /* ---- Action buttons ---- */
+  .panel-actions { margin-top: 20px; padding-top: 16px; border-top: 1px solid #e8eaef; }
+  .revising-notice {
+    background: #f0fdfa; border: 1px solid #0D9488;
+    border-radius: 8px; padding: 12px 14px;
+    font-size: 13px; color: #134e4a; line-height: 1.5;
+  }
+  .readonly-notice {
+    font-size: 13px; color: #aaa; font-style: italic; padding: 6px 0;
+  }
+  .corp-pending-notice {
+    background: #faf5ff; border: 1px solid #9C27B0;
+    border-radius: 8px; padding: 12px 14px;
+    font-size: 13px; color: #4a1070; line-height: 1.5;
+  }
+  .action-row { display: flex; gap: 10px; margin-top: 10px; flex-wrap: wrap; }
+  .btn {
+    display: inline-block; padding: 12px 24px; border-radius: 8px;
+    font-size: 14px; font-weight: 700; cursor: pointer;
+    border: none; text-align: center;
+  }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn-approve  { background: #4CAF50; color: #fff; flex: 1; }
+  .btn-changes  { background: #FF9800; color: #fff; flex: 1; }
+  .btn-dark     { background: #1a1a2e; color: #fff; }
+  .btn-approve:hover  { background: #388E3C; }
+  .btn-changes:hover  { background: #e68900; }
+  .btn-undo {
+    background: none; border: 1px solid #ccc; color: #888;
+    font-size: 12px; font-weight: 600; padding: 8px 16px;
+    border-radius: 6px; cursor: pointer; margin-top: 12px;
+    display: block; width: 100%;
+  }
+  .btn-undo:hover { border-color: #999; color: #555; background: #f8f8f8; }
+
+  /* ---- Confirm screen ---- */
+  .confirm-screen {
+    display: none; position: fixed; inset: 0;
+    background: #f0f2f5; z-index: 200;
+    flex-direction: column; align-items: center; justify-content: center;
+    text-align: center; padding: 40px;
+  }
+  .confirm-screen.open { display: flex; }
+  .confirm-box { max-width: 480px; }
+  .confirm-icon { font-size: 52px; margin-bottom: 16px; }
+  .confirm-box h2 { font-size: 22px; margin-bottom: 10px; }
+  .confirm-box p { font-size: 15px; color: #555; line-height: 1.6; margin-bottom: 28px; }
+
+  /* ---- Toast & Spinner ---- */
+  .toast {
+    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+    background: #1a1a2e; color: #fff; padding: 12px 24px;
+    border-radius: 8px; font-size: 14px; font-weight: 600;
+    z-index: 300; opacity: 0; pointer-events: none;
+    transition: opacity 0.25s; white-space: pre-line; text-align: center;
+  }
+  .toast.show { opacity: 1; }
+
+  .spinner-veil {
+    display: none; position: fixed; inset: 0;
+    background: rgba(255,255,255,0.7); z-index: 250;
+    align-items: center; justify-content: center;
+  }
+  .spinner-veil.show { display: flex; }
+  .spinner {
+    width: 40px; height: 40px; border: 4px solid #e0e0e0;
+    border-top-color: #1a1a2e; border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.65; } }
+
+  /* ---- Local toolbar: Send to Corporate batch badge ---- */
+  .toolbar-batch-badge {
+    display: none;
+    background: #6366F1;
+    color: #fff;
+    font-size: 12px;
+    font-weight: 700;
+    padding: 5px 12px;
+    border-radius: 20px;
+    margin-right: 4px;
+    animation: pulse 1.5s infinite;
+  }
+  .toolbar-batch-btn {
+    display: none;
+    background: #6366F1;
+    border-color: #6366F1;
+    color: #fff;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    border-width: 1px;
+    border-style: solid;
+  }
+  .toolbar-batch-btn:hover { background: #4f46e5; border-color: #4f46e5; }
+
+  /* ---- pc-thumb (image on card) ---- */
+  .pc-thumb {
+    display: block;
+    width: 100%;
+    max-height: 80px;
+    object-fit: cover;
+    border-radius: 3px;
+    margin-top: 4px;
+  }
+  .pc-media-link {
+    display: block;
+    font-size: 10px;
+    color: #6366F1;
+    margin-top: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+</style>
+
+<!-- ===================== HTML ===================== -->
+
+<div class="header">
+  <div>
+    <div class="header-brand">IES-TEXA</div>
+    <div class="header-sub">Social Media Post Review Portal</div>
+  </div>
+  <div class="header-client" id="headerGreet"></div>
+  <span class="header-level" id="headerLevel"></span>
+</div>
+
+<div class="toolbar">
+  <button id="btnPrev">&#8592;</button>
+  <span id="monthLabel"></span>
+  <button id="btnNext">&#8594;</button>
+  <button id="btnToday">Today</button>
+  <span id="badgeAwaitingCorp" class="toolbar-batch-badge"></span>
+  <button id="btnSendToCorp" class="toolbar-batch-btn">Send to Corporate</button>
+  <span id="badgeCorpResponses" class="toolbar-batch-badge" style="background:#9C27B0;"></span>
+  <button id="btnSendResponses" class="toolbar-batch-btn" style="background:#9C27B0;border-color:#9C27B0;">Send Responses</button>
+  <div class="legend" id="legend"></div>
+</div>
+
+<div class="cal-wrap">
+  <div id="calendar" class="calendar"></div>
+</div>
+
+<div id="overlay" class="overlay"></div>
+
+<div id="panel" class="panel">
+  <div class="panel-header">
+    <div id="panelHeaderStatus"></div>
+    <button id="btnClosePanel" class="panel-close">&#10005;</button>
+  </div>
+  <div class="panel-scroll">
+    <h2 id="panelTitle" class="panel-title"></h2>
+    <div id="panelMeta" class="panel-meta"></div>
+    <div id="panelCopy" class="panel-copy"></div>
+    <div id="panelMedia" class="panel-media"></div>
+    <div class="discussion-head">Discussion</div>
+    <div id="panelComments"></div>
+    <div id="panelCommentInput" class="comment-input-wrap" style="display:none;">
+      <label class="comment-input-label">Add a note with your decision (optional)</label>
+      <textarea id="commentText" placeholder="Describe any requested changes, or add context for your approval..."></textarea>
+    </div>
+    <div id="panelActions" class="panel-actions"></div>
+  </div>
+</div>
+
+<div id="confirmScreen" class="confirm-screen">
+  <div class="confirm-box">
+    <div id="confirmIcon" class="confirm-icon"></div>
+    <h2 id="confirmTitle"></h2>
+    <p id="confirmMsg"></p>
+    <button id="btnBackToPortal" class="btn btn-dark">Back to portal</button>
+  </div>
+</div>
+
+<div id="toast" class="toast"></div>
+<div id="spinnerVeil" class="spinner-veil"><div class="spinner"></div></div>
+
+<!-- ===================== JS ===================== -->
+<script>
+(function () {
+  'use strict';
+
+  // ----------------------------------------------------------------
+  // Constants
+  // ----------------------------------------------------------------
+  var STATUS_COLORS = {
+    'Local_Client_Review': '#FF9800',
+    'Revising':            '#0D9488',
+    'Awaiting_Corporate':  '#6366F1',
+    'Corporate_Review':    '#9C27B0',
+    'Approved':            '#4CAF50',
+    'Published':           '#1B5E20'
+  };
+
+  // Human-readable labels from the client perspective.
+  var STATUS_LABELS_LOCAL = {
+    'Local_Client_Review': 'Your review needed',
+    'Revising':            'Agency is revising',
+    'Awaiting_Corporate':  'Send to Corporate',
+    'Corporate_Review':    'In corporate review',
+    'Approved':            'Approved',
+    'Published':           'Published'
+  };
+  var STATUS_LABELS_CORP = {
+    'Revising':         'Changes submitted',
+    'Corporate_Review': 'Your review needed',
+    'Approved':         'Approved',
+    'Published':        'Published'
+  };
+
+  var STATUS_LABELS = IS_CORPORATE ? STATUS_LABELS_CORP : STATUS_LABELS_LOCAL;
+
+  // Status where this client can take action.
+  var ACTIONABLE_STATUS = IS_CORPORATE ? 'Corporate_Review' : 'Local_Client_Review';
+
+  // Statuses that are visually muted (done).
+  var DONE_STATUSES = { 'Approved': true, 'Published': true };
+
+  // Platform abbreviations for card chips.
+  var PLATFORM_ABBR = { 'LinkedIn': 'in', 'Facebook': 'fb', 'Instagram': 'ig' };
+
+  var MONTH_NAMES = ['January','February','March','April','May','June',
+                     'July','August','September','October','November','December'];
+
+  // ----------------------------------------------------------------
+  // State
+  // ----------------------------------------------------------------
+  var state = {
+    posts: [],
+    current: new Date(),   // month being viewed
+    activePost: null,
+    activeComments: [],
+    activeCanUndo: false
+  };
+
+  // ----------------------------------------------------------------
+  // Utilities
+  // ----------------------------------------------------------------
+  function $(id) { return document.getElementById(id); }
+
+  function esc(s) {
+    return String(s === null || s === undefined ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  function showSpinner(on) {
+    $('spinnerVeil').className = on ? 'spinner-veil show' : 'spinner-veil';
+  }
+
+  var toastTimer = null;
+  function toast(msg) {
+    var t = $('toast');
+    t.textContent = msg;
+    t.className = 'toast show';
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { t.className = 'toast'; }, 6000);
+  }
+
+  function fail(err) {
+    showSpinner(false);
+    var msg = (err && err.message) ? err.message : String(err);
+    toast('Error: ' + msg);
+  }
+
+  function run(fnName) {
+    var args = Array.prototype.slice.call(arguments, 1);
+    return new Promise(function (resolve, reject) {
+      var runner = google.script.run
+        .withSuccessHandler(resolve)
+        .withFailureHandler(reject);
+      runner[fnName].apply(runner, args);
+    });
+  }
+
+  function parseDateOnly(value) {
+    var s = String(value || '').trim();
+    if (!s) return null;
+    var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+    if (m) return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+    var d = new Date(s);
+    return isNaN(d.getTime()) ? null : new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  }
+
+  function ymd(d) {
+    return d.getFullYear() + '-' +
+      ('0' + (d.getMonth() + 1)).slice(-2) + '-' +
+      ('0' + d.getDate()).slice(-2);
+  }
+
+  function niceDate(value) {
+    var d = parseDateOnly(value);
+    if (!d) return '';
+    var short = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    return short[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+  }
+
+  function classifyMedia(url) {
+    var u = String(url || '').trim();
+    if (!u) return { type: 'none', url: '' };
+    var lower = u.toLowerCase();
+    if (lower.indexOf('box.com/shared/static/') !== -1) return { type: 'image', url: u };
+    if (lower.indexOf('box.com') !== -1) return { type: 'box', url: u };
+    if (lower.indexOf('canva.com') !== -1) return { type: 'canva', url: u };
+    if (/\.(png|jpg|jpeg|gif|webp)(\?.*)?$/.test(lower) ||
+        lower.indexOf('s3.amazonaws.com') !== -1) return { type: 'image', url: u };
+    return { type: 'link', url: u };
+  }
+
+  function getPrimaryMediaUrl(p) {
+    var fields = ['Instagram_URL','Facebook_URL','LinkedIn_URL','Carousel_URLs','Media_URL'];
+    for (var i = 0; i < fields.length; i++) {
+      var val = String(p[fields[i]] || '').trim();
+      if (!val) continue;
+      var first = val.split('\n')[0].trim();
+      if (first) return first;
+    }
+    return '';
+  }
+
+  // ----------------------------------------------------------------
+  // Header
+  // ----------------------------------------------------------------
+  function renderHeader() {
+    // Distinct header background per portal type so it's unmistakable which portal you're in.
+    // Agency (Index.html): dark navy #1a1a2e
+    // Local client: dark teal #0A4D3A
+    // Corporate: deep purple #3D1070
+    document.querySelector('.header').style.background = IS_CORPORATE ? '#3D1070' : '#0A4D3A';
+    $('headerGreet').textContent = 'Hello, ' + APPROVER_NAME;
+    $('headerLevel').textContent = IS_CORPORATE ? 'Corporate' : 'Local Client';
+  }
+
+  // ----------------------------------------------------------------
+  // Legend
+  // ----------------------------------------------------------------
+  function renderLegend() {
+    var items = IS_CORPORATE
+      ? [['Corporate_Review','Your review needed'],['Revising','Changes submitted'],['Approved','Approved'],['Published','Published']]
+      : [['Local_Client_Review','Your review needed'],['Revising','Agency revising'],
+         ['Awaiting_Corporate','Send to Corporate'],['Corporate_Review','Corp review'],
+         ['Approved','Approved'],['Published','Published']];
+    var html = '';
+    items.forEach(function (pair) {
+      var color = STATUS_COLORS[pair[0]] || '#ccc';
+      html += '<div class="legend-item">' +
+        '<div class="legend-dot" style="background:' + color + ';"></div>' +
+        esc(pair[1]) + '</div>';
+    });
+    $('legend').innerHTML = html;
+  }
+
+  // ----------------------------------------------------------------
+  // Calendar rendering
+  // ----------------------------------------------------------------
+  function renderCalendar() {
+    var cal = $('calendar');
+    var y = state.current.getFullYear();
+    var m = state.current.getMonth();
+    $('monthLabel').textContent = MONTH_NAMES[m] + ' ' + y;
+
+    var postsByDay = {};
+    state.posts.forEach(function (p) {
+      var d = parseDateOnly(p.Scheduled_Date);
+      var key = d ? ymd(d) : 'unscheduled';
+      if (!postsByDay[key]) postsByDay[key] = [];
+      postsByDay[key].push(p);
+    });
+
+    var html = '';
+    var dows = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];
+    dows.forEach(function (d) { html += '<div class="cal-dow">' + d + '</div>'; });
+
+    var first = new Date(y, m, 1);
+    var start = new Date(y, m, 1 - first.getDay());
+    var today = new Date();
+    var todayKey = ymd(today);
+
+    for (var i = 0; i < 42; i++) {
+      var day = new Date(start.getFullYear(), start.getMonth(), start.getDate() + i);
+      var inMonth = day.getMonth() === m;
+      var key = ymd(day);
+      var cls = 'cal-day' + (inMonth ? '' : ' other-month') + (key === todayKey ? ' today' : '');
+      html += '<div class="' + cls + '"><div class="daynum">' + day.getDate() + '</div>';
+      (postsByDay[key] || []).forEach(function (p) {
+        html += postCardHtml(p);
+      });
+      html += '</div>';
+    }
+    cal.innerHTML = html;
+
+    // Card click delegation.
+    cal.addEventListener('click', function (e) {
+      var card = e.target.closest ? e.target.closest('.post-card') : null;
+      if (!card) return;
+      openPost(card.getAttribute('data-id'));
+    });
+  }
+
+  function postCardHtml(p) {
+    var color = STATUS_COLORS[p.Status] || '#9E9E9E';
+    var isDone = !!DONE_STATUSES[p.Status];
+    var badgeTextColor = '#ffffff';
+    var primaryUrl = getPrimaryMediaUrl(p);
+    var media = classifyMedia(primaryUrl);
+    var platforms = String(p.Platform || '').split(',')
+      .map(function (x) { return x.trim(); }).filter(function (x) { return x; });
+    var icons = platforms.map(function (pl) {
+      return '<span class="platform-ico">' + esc(PLATFORM_ABBR[pl] || pl.slice(0, 2).toLowerCase()) + '</span>';
+    }).join('');
+    var label = STATUS_LABELS[p.Status] || p.Status.replace(/_/g, ' ');
+    var thumb;
+    if (media.type === 'image') {
+      thumb = '<img class="pc-thumb" src="' + esc(media.url) + '" alt="" onerror="this.style.display=\'none\'">';
+    } else if (primaryUrl) {
+      var linkLabel = media.type === 'box' ? '&#128230; Open in Box &#8599;' : '&#128279; View media &#8599;';
+      thumb = '<a class="pc-media-link" href="' + esc(primaryUrl) + '" target="_blank" rel="noopener noreferrer">' + linkLabel + '</a>';
+    } else {
+      thumb = '';
+    }
+    var cardStyle = 'border-left-color:' + color + ';';
+    return '<div class="post-card' + (isDone ? ' post-card-done' : '') +
+      '" data-id="' + esc(p.ID) + '" style="' + cardStyle + '">' +
+      '<div class="pc-title">' + esc(p.Title || '(untitled)') + '</div>' +
+      '<div class="pc-meta">' +
+      '<span class="badge" style="background:' + color + ';color:' + badgeTextColor + ';">' +
+      esc(label) + '</span>' + icons + '</div>' + thumb + '</div>';
+  }
+
+  // ----------------------------------------------------------------
+  // Panel open / close
+  // ----------------------------------------------------------------
+  function openPost(postId) {
+    showSpinner(true);
+    run('api_clientGetPost', TOKEN, postId).then(function (detail) {
+      showSpinner(false);
+      state.activePost = detail.post;
+      state.activeComments = detail.comments || [];
+      state.activeCanUndo = !!detail.canUndo;
+      renderPanel();
+      $('panel').className = 'panel open';
+      $('overlay').className = 'overlay open';
+      $('panel').querySelector('.panel-scroll').scrollTop = 0;
+    }).catch(fail);
+  }
+
+  function closePanel() {
+    $('panel').className = 'panel';
+    $('overlay').className = 'overlay';
+    state.activePost = null;
+    state.activeComments = [];
+  }
+
+  // ----------------------------------------------------------------
+  // Panel rendering
+  // ----------------------------------------------------------------
+  function renderPanel() {
+    var p = state.activePost;
+    if (!p) return;
+
+    var color = STATUS_COLORS[p.Status] || '#9E9E9E';
+    var label = STATUS_LABELS[p.Status] || p.Status.replace(/_/g, ' ');
+    var badgeTextColor = '#ffffff';   // teal Revising uses white text
+    var isActionable      = (p.Status === ACTIONABLE_STATUS);
+    var isRevising        = (p.Status === 'Revising');
+    var isReadyForCorp    = (!IS_CORPORATE && p.Status === 'Awaiting_Corporate');
+    var isAwaitingCorp    = (!IS_CORPORATE && (p.Status === 'Awaiting_Corporate' || p.Status === 'Corporate_Review'));
+    var canUndo        = !!(state.activeCanUndo);
+
+    // Header status badge.
+    $('panelHeaderStatus').innerHTML =
+      '<span class="panel-status-label" style="background:' + color +
+      ';color:' + badgeTextColor + ';">' + esc(label) + '</span>';
+
+    // Title.
+    $('panelTitle').textContent = p.Title || '(untitled)';
+
+    // Meta chips.
+    var metaHtml = '';
+    var platforms = String(p.Platform || '').split(',')
+      .map(function (x) { return x.trim(); }).filter(function (x) { return x; });
+    platforms.forEach(function (pl) {
+      metaHtml += '<span class="panel-pill">' + esc(pl) + '</span>';
+    });
+    if (p.Scheduled_Date) {
+      metaHtml += '<span class="panel-pill">Scheduled: ' + esc(niceDate(p.Scheduled_Date)) + '</span>';
+    }
+    $('panelMeta').innerHTML = metaHtml;
+
+    // Post copy.
+    $('panelCopy').textContent = p.Post_Copy || '';
+
+    // Media assets.
+    renderPanelMedia(p);
+
+    // Comments.
+    renderPanelComments(state.activeComments);
+
+    // Comment input — only when actionable.
+    var commentWrap = $('panelCommentInput');
+    commentWrap.style.display = isActionable ? 'block' : 'none';
+    if (isActionable) { $('commentText').value = ''; }
+
+    // Action area.
+    renderPanelActions(p, isActionable, isRevising, isReadyForCorp, isAwaitingCorp, canUndo);
+  }
+
+  function renderPanelMedia(p) {
+    var sections = [
+      { label: 'LinkedIn',              field: 'LinkedIn_URL' },
+      { label: 'Facebook',              field: 'Facebook_URL' },
+      { label: 'Instagram',             field: 'Instagram_URL' },
+      { label: 'Carousel / All platforms', field: 'Carousel_URLs' }
+    ];
+    var html = '';
+    sections.forEach(function (s) {
+      var val = String(p[s.field] || '').trim();
+      if (!val) return;
+      var urls = val.split('\n').map(function (u) { return u.trim(); }).filter(Boolean);
+      if (!urls.length) return;
+      html += '<div class="media-section-label">' + esc(s.label) + '</div>';
+      urls.forEach(function (url, idx) {
+        var media = classifyMedia(url);
+        var num = (idx + 1) + '. ';
+        if (media.type === 'image') {
+          html += '<div>' + num + '</div>' +
+            '<img class="media-img" src="' + esc(url) + '" alt="Image ' + (idx + 1) + '" ' +
+            'onerror="this.style.display=\'none\'">';
+        } else if (media.type === 'box') {
+          html += '<div>' + num +
+            '<a class="media-link" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' +
+            '&#128230; Open in Box &#8599;</a></div>';
+        } else if (media.type === 'canva') {
+          html += '<div>' + num +
+            '<a class="media-link" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' +
+            'View in Canva &#8599;</a></div>';
+        } else if (media.type === 'link') {
+          html += '<div>' + num +
+            '<a class="media-link" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' +
+            '&#128279; View media &#8599;</a></div>';
+        }
+      });
+    });
+    // Fallback to legacy Media_URL.
+    if (!html && p.Media_URL) {
+      var media = classifyMedia(p.Media_URL);
+      if (media.type === 'image') {
+        html = '<img class="media-img" src="' + esc(p.Media_URL) + '" alt="Media">';
+      } else if (media.url) {
+        html = '<a class="media-link" href="' + esc(media.url) + '" target="_blank" rel="noopener noreferrer">' +
+          '&#128279; View media &#8599;</a>';
+      }
+    }
+    $('panelMedia').innerHTML = html;
+  }
+
+  function renderPanelComments(comments) {
+    if (!comments || !comments.length) {
+      $('panelComments').innerHTML = '<div class="no-comments">No discussion yet.</div>';
+      return;
+    }
+    var html = '';
+    comments.forEach(function (c) {
+      html += '<div class="comment">' +
+        '<div class="comment-meta">' +
+        esc(c.Author_Name || c.Author_Email) + ' &middot; ' + esc(c.Created_Date) + '</div>' +
+        '<div class="comment-text">' + esc(c.Comment_Text) + '</div></div>';
+    });
+    $('panelComments').innerHTML = html;
+  }
+
+  function renderPanelActions(p, isActionable, isRevising, isReadyForCorp, isAwaitingCorp, canUndo) {
+    var actEl = $('panelActions');
+    if (isActionable) {
+      actEl.innerHTML =
+        '<div class="action-row">' +
+        '<button id="btnApprove" class="btn btn-approve">Approve</button>' +
+        '<button id="btnChanges" class="btn btn-changes">Request Changes</button>' +
+        '</div>';
+      $('btnApprove').addEventListener('click', function () { submitDecision('approve'); });
+      $('btnChanges').addEventListener('click', function () { submitDecision('changes'); });
+    } else if (isRevising && IS_CORPORATE) {
+      // Corporate requested changes — post is Revising. Show confirmation + optional undo.
+      actEl.innerHTML =
+        '<div class="revising-notice">' +
+        'Your feedback has been submitted. The agency is working on revisions and will return this post for your review when ready.' +
+        '</div>' +
+        (canUndo ? '<button id="btnUndo" class="btn-undo">Undo my request</button>' : '');
+    } else if (isRevising) {
+      // Local client view of Revising — agency is working on it.
+      actEl.innerHTML =
+        '<div class="revising-notice">' +
+        'The team is working on your requested changes. This post will return to your queue when revisions are ready.' +
+        '</div>' +
+        (canUndo ? '<button id="btnUndo" class="btn-undo">Undo my request</button>' : '');
+    } else if (isReadyForCorp) {
+      // Local client: post is approved, ready to send to corporate. Toolbar button is the action.
+      actEl.innerHTML =
+        '<div class="corp-pending-notice">' +
+        '<strong>Ready for corporate review.</strong> Use the ' +
+        '<strong>Send to Corporate</strong> button in the toolbar above to notify the corporate team.' +
+        '</div>' +
+        (canUndo ? '<button id="btnUndo" class="btn-undo">Undo my approval</button>' : '');
+    } else if (isAwaitingCorp) {
+      // Local client view of a post already in Corporate_Review.
+      actEl.innerHTML =
+        '<div class="corp-pending-notice">' +
+        'This post is in corporate review. You\'ll be notified when a decision is made.' +
+        '</div>';
+    } else {
+      actEl.innerHTML =
+        '<div class="readonly-notice">No action needed at this stage.</div>';
+    }
+    // Wire undo button if present
+    var undoBtn = $('btnUndo');
+    if (undoBtn) undoBtn.addEventListener('click', undoDecision);
+  }
+
+  // ----------------------------------------------------------------
+  // Decision submission
+  // ----------------------------------------------------------------
+  function submitDecision(decision) {
+    var p = state.activePost;
+    if (!p) return;
+    var commentEl = $('commentText');
+    var comment = commentEl ? commentEl.value.trim() : '';
+    if (decision === 'changes' && !comment) {
+      toast('Please describe the changes needed in the comment box first.');
+      if (commentEl) commentEl.focus();
+      return;
+    }
+    var btnA = $('btnApprove');
+    var btnC = $('btnChanges');
+    if (btnA) { btnA.disabled = true; }
+    if (btnC) { btnC.disabled = true; }
+    showSpinner(true);
+    var postTitle = p.Title;
+    run('api_clientSubmitDecision', TOKEN, p.ID, decision, comment)
+      .then(function (res) {
+        showSpinner(false);
+        if (!res.ok) {
+          if (btnA) { btnA.disabled = false; }
+          if (btnC) { btnC.disabled = false; }
+          closePanel();
+          toast(res.message || 'This post has already been handled.');
+          return;
+        }
+        closePanel();
+        if (decision === 'approve') {
+          $('confirmIcon').innerHTML = '&#9989;';
+          $('confirmTitle').textContent = 'Mahalo! We\'ve received your approval.';
+          $('confirmMsg').textContent = 'You approved "' + postTitle + '". No further action is needed on your part.';
+        } else {
+          $('confirmIcon').innerHTML = '&#128260;';
+          $('confirmTitle').textContent = 'Mahalo! We\'ve received your feedback.';
+          $('confirmMsg').textContent = 'Your requested changes for "' + postTitle + '" have been noted. The team will follow up with revisions.';
+        }
+        $('confirmScreen').className = 'confirm-screen open';
+        loadPosts(); // Refresh calendar in background.
+        // Immediately update send badge — don't wait for the timer.
+        if (IS_CORPORATE) { loadCorpPendingBatch(); } else { loadLocalPendingBatch(); }
+      })
+      .catch(function (err) {
+        if (btnA) { btnA.disabled = false; }
+        if (btnC) { btnC.disabled = false; }
+        fail(err);
+      });
+  }
+
+  // ----------------------------------------------------------------
+  // Undo last decision
+  // ----------------------------------------------------------------
+  function undoDecision() {
+    var p = state.activePost;
+    if (!p) return;
+    var undoBtn = $('btnUndo');
+    if (undoBtn) undoBtn.disabled = true;
+    showSpinner(true);
+    run('api_clientUndoDecision', TOKEN, p.ID)
+      .then(function (res) {
+        showSpinner(false);
+        if (!res.ok) {
+          if (undoBtn) undoBtn.disabled = false;
+          toast(res.message || 'Could not undo decision.');
+          return;
+        }
+        // Re-open the panel so the client sees their action buttons again.
+        openPost(p.ID);
+        toast('Decision reversed. You can now re-review this post.');
+        loadPosts(); // Refresh calendar in background.
+        if (IS_CORPORATE) { loadCorpPendingBatch(); } else { loadLocalPendingBatch(); }
+      })
+      .catch(function (err) {
+        if (undoBtn) undoBtn.disabled = false;
+        fail(err);
+      });
+  }
+
+  // ----------------------------------------------------------------
+  // Comment submission
+  // ----------------------------------------------------------------
+  function addComment() {
+    var p = state.activePost;
+    if (!p) return;
+    var commentEl = $('commentText');
+    var text = commentEl ? commentEl.value.trim() : '';
+    if (!text) { toast('Please write a comment first.'); return; }
+    var btn = $('btnAddComment');
+    if (btn) btn.disabled = true;
+    showSpinner(true);
+    run('api_clientAddComment', TOKEN, p.ID, text)
+      .then(function () {
+        commentEl.value = '';
+        return run('api_clientGetPost', TOKEN, p.ID);
+      })
+      .then(function (detail) {
+        showSpinner(false);
+        state.activeComments = detail.comments || [];
+        renderPanelComments(state.activeComments);
+        if (btn) btn.disabled = false;
+        toast('Comment sent.');
+      })
+      .catch(function (err) {
+        if (btn) btn.disabled = false;
+        fail(err);
+      });
+  }
+
+  // ----------------------------------------------------------------
+  // Data loading
+  // ----------------------------------------------------------------
+  function loadPosts() {
+    run('api_clientGetAllPosts', TOKEN).then(function (posts) {
+      state.posts = posts || [];
+      renderCalendar();
+    }).catch(function (err) {
+      console.error('loadPosts failed:', err);
+    });
+  }
+
+  // ----------------------------------------------------------------
+  // Local portal: batch Send to Corporate toolbar badge
+  // ----------------------------------------------------------------
+  function loadLocalPendingBatch() {
+    if (IS_CORPORATE) return; // Corporate portal has no send badge
+    run('api_localGetPendingCorpCount', TOKEN).then(function (res) {
+      var count = (res && typeof res.awaitingCorpCount === 'number') ? res.awaitingCorpCount : 0;
+      var badge = $('badgeAwaitingCorp');
+      var btn   = $('btnSendToCorp');
+      if (count > 0) {
+        badge.textContent = '⚠️ ' + count + ' ready — send to Corporate!';
+        badge.style.display = 'inline-block';
+        btn.style.display   = 'inline-block';
+      } else {
+        badge.style.display = 'none';
+        btn.style.display   = 'none';
+      }
+    }).catch(function (err) {
+      console.error('loadLocalPendingBatch failed:', err);
+    });
+  }
+
+  function localSendToCorporate() {
+    if (!confirm('Send all approved posts to corporate review now?\n\nCorporate will receive a review request email. Agency will also be notified.')) return;
+    showSpinner(true);
+    run('api_localSendToCorporate', TOKEN).then(function (res) {
+      showSpinner(false);
+      var sent = (res && typeof res.sent === 'number') ? res.sent : 0;
+      if (sent > 0) {
+        showAllCaughtUp('badgeAwaitingCorp', 'btnSendToCorp');
+        toast(sent + ' post' + (sent !== 1 ? 's' : '') + ' sent to corporate review. Agency has been notified.');
+      } else {
+        toast('No posts to send at this time.');
+      }
+      loadPosts();
+      loadLocalPendingBatch();
+    }).catch(function (err) {
+      showSpinner(false);
+      fail(err);
+    });
+  }
+
+  // ----------------------------------------------------------------
+  // Corporate portal: batch Send Responses toolbar badge
+  // ----------------------------------------------------------------
+  function loadCorpPendingBatch() {
+    if (!IS_CORPORATE) return;
+    run('api_corporateGetPendingBatchCount', TOKEN).then(function (res) {
+      var count = (res && typeof res.pendingCount === 'number') ? res.pendingCount : 0;
+      var badge = $('badgeCorpResponses');
+      var btn   = $('btnSendResponses');
+      if (count > 0) {
+        badge.textContent = '⚠️ ' + count + ' post' + (count !== 1 ? 's' : '') + ' — send responses!';
+        badge.style.display = 'inline-block';
+        btn.style.display   = 'inline-block';
+      } else {
+        badge.style.display = 'none';
+        btn.style.display   = 'none';
+      }
+    }).catch(function (err) {
+      console.error('loadCorpPendingBatch failed:', err);
+    });
+  }
+
+  function showAllCaughtUp(badgeId, btnId) {
+    var badge = $(badgeId);
+    var btn   = $(btnId);
+    badge.textContent = '✓ All caught up';
+    badge.style.background = '#4CAF50';
+    badge.style.animation  = 'none';
+    badge.style.display    = 'inline-block';
+    btn.style.display      = 'none';
+    setTimeout(function () {
+      badge.style.display = 'none';
+      badge.style.background = '';
+      badge.style.animation  = 'pulse 1.5s infinite';
+    }, 4000);
+  }
+
+  function corpSendBatch() {
+    if (!confirm('Send your review decisions to the local client and agency now?\n\nOne summary email will go to each — covering all posts you\'ve reviewed since your last send.')) return;
+    showSpinner(true);
+    run('api_corporateSendBatch', TOKEN).then(function (res) {
+      showSpinner(false);
+      var sent = (res && typeof res.sent === 'number') ? res.sent : 0;
+      if (sent > 0) {
+        showAllCaughtUp('badgeCorpResponses', 'btnSendResponses');
+        toast('Decisions sent for ' + sent + ' post' + (sent !== 1 ? 's' : '') + '. Local client and agency have been notified.');
+      } else {
+        toast('No pending decisions to send.');
+        loadCorpPendingBatch();
+      }
+    }).catch(function (err) {
+      showSpinner(false);
+      fail(err);
+    });
+  }
+
+  // ----------------------------------------------------------------
+  // Event wiring
+  // ----------------------------------------------------------------
+  $('btnPrev').addEventListener('click', function () {
+    state.current = new Date(state.current.getFullYear(), state.current.getMonth() - 1, 1);
+    renderCalendar();
+  });
+  $('btnNext').addEventListener('click', function () {
+    state.current = new Date(state.current.getFullYear(), state.current.getMonth() + 1, 1);
+    renderCalendar();
+  });
+  $('btnToday').addEventListener('click', function () {
+    state.current = new Date();
+    renderCalendar();
+  });
+  $('btnClosePanel').addEventListener('click', closePanel);
+  $('overlay').addEventListener('click', closePanel);
+  if (!IS_CORPORATE) {
+    $('btnSendToCorp').addEventListener('click', localSendToCorporate);
+  }
+  if (IS_CORPORATE) {
+    $('btnSendResponses').addEventListener('click', corpSendBatch);
+  }
+  $('btnBackToPortal').addEventListener('click', function () {
+    $('confirmScreen').className = 'confirm-screen';
+  });
+
+  // ----------------------------------------------------------------
+  // Auto-refresh every 2 minutes (silent, skips if panel is open)
+  // ----------------------------------------------------------------
+  // Posts refresh every 2 minutes; badge checks every 30 seconds.
+  setInterval(function () {
+    if (!state.activePost) { loadPosts(); }
+  }, 120000);
+  setInterval(function () {
+    if (IS_CORPORATE) { loadCorpPendingBatch(); } else { loadLocalPendingBatch(); }
+  }, 30000);
+
+  // ----------------------------------------------------------------
+  // Init
+  // ----------------------------------------------------------------
+  renderHeader();
+  renderLegend();
+  if (!IS_CORPORATE) { loadLocalPendingBatch(); }
+  if (IS_CORPORATE) { loadCorpPendingBatch(); }
+  showSpinner(true);
+  run('api_clientGetAllPosts', TOKEN).then(function (posts) {
+    state.posts = posts || [];
+    renderCalendar();
+    showSpinner(false);
+  }).catch(function (err) {
+    showSpinner(false);
+    fail(err);
+  });
+
+})();
+</script>
