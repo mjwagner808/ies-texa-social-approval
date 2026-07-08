@@ -225,8 +225,10 @@
       position: fixed; bottom: 28px; left: 50%; transform: translateX(-50%);
       background: var(--navy); color: #fff; padding: 12px 22px; border-radius: 10px;
       font-size: 14px; z-index: 110; opacity: 0; transition: opacity .25s; pointer-events: none;
+      white-space: pre-line; text-align: center;
     }
     .toast.show { opacity: 1; }
+    .toast.error { background: #b91c1c; }
     /* ---------- Hover preview tooltip ---------- */
     .preview-tooltip {
       position: fixed; z-index: 200; background: #fff;
@@ -245,6 +247,29 @@
       .cal-day { min-height: 80px; }
       .panel { width: 100vw; }
     }
+    /* ---------- Send picker modal ---------- */
+    .send-picker-modal {
+      position: fixed; top: 50%; left: 50%; transform: translate(-50%, -48%);
+      width: 480px; max-width: 92vw; max-height: 82vh; background: #fff;
+      border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+      z-index: 65; display: none; flex-direction: column; overflow: hidden;
+    }
+    .send-picker-modal.open { display: flex; }
+    .sp-row {
+      display: flex; align-items: center; gap: 10px; padding: 10px 0;
+      border-bottom: 1px solid #f0f1f4; font-size: 13px;
+    }
+    .sp-row:last-child { border-bottom: none; }
+    .sp-name { flex: 1; font-weight: 600; }
+    .sp-channels { display: flex; gap: 12px; font-size: 12px; color: #555; }
+    .sp-channels label { display: flex; align-items: center; gap: 4px; }
+    .sp-empty { color: #888; font-size: 13px; padding: 12px 0; }
+    .sp-hint { font-size: 12px; color: #888; margin-bottom: 12px; }
+    .sp-link-row {
+      border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px;
+    }
+    .sp-link-row .sp-link-name { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
+    .sp-link-row input { width: 100%; font: inherit; font-size: 12px; padding: 7px 9px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 6px; background: #fafbfc; }
   </style>
 </head>
 <body>
@@ -291,6 +316,19 @@
 </div>
 
 <button class="fab" id="btnCreate" title="Create post">+</button>
+
+<div class="overlay" id="sendPickerOverlay"></div>
+<div class="send-picker-modal" id="sendPickerModal">
+  <div class="panel-header">
+    <h2 id="sendPickerTitle">Send</h2>
+    <button class="btn small" id="btnCloseSendPicker">&#10005; Close</button>
+  </div>
+  <div class="panel-body" id="sendPickerBody"></div>
+  <div class="panel-footer">
+    <button class="btn" id="btnCancelSendPicker">Cancel</button>
+    <button class="btn primary" id="btnConfirmSendPicker">Send</button>
+  </div>
+</div>
 
 <div class="overlay" id="overlay"></div>
 
@@ -442,6 +480,10 @@
     pendingApprovers: [],     // kept for future use
     openPostIdOnLoad: '<?= openPostId ?>'
   };
+  // Guards against overlapping api_getPosts calls (e.g. Save's own refresh
+  // colliding with the 60-second background auto-refresh), which was
+  // triggering GAS's "too many simultaneous invocations" quota error.
+  var isRefreshing = false;
 
   // ------------------------------------------------------------------
   // Utilities
@@ -459,12 +501,12 @@
   }
 
   var toastTimer = null;
-  function toast(msg) {
+  function toast(msg, type) {
     var t = $('toast');
     t.textContent = msg;
-    t.className = 'toast show';
+    t.className = 'toast show' + (type === 'error' ? ' error' : '');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.className = 'toast'; }, 6000);
+    toastTimer = setTimeout(function () { t.className = 'toast'; }, type === 'error' ? 10000 : 6000);
   }
 
   function fail(err) {
@@ -485,16 +527,34 @@
 
   function classifyMedia(url) {
     var u = String(url || '').trim();
-    if (!u) return { type: 'none', url: '' };
+    if (!u) return { type: 'none', url: '', thumbUrl: '' };
     var lower = u.toLowerCase();
     // Box /shared/static/ URLs are direct download links — treat as images.
-    if (lower.indexOf('box.com/shared/static/') !== -1) return { type: 'image', url: u };
-    if (lower.indexOf('box.com') !== -1) return { type: 'box', url: u };
-    if (lower.indexOf('canva.com') !== -1) return { type: 'canva', url: u };
-    if (/\.(png|jpg|jpeg|gif|webp)(\?.*)?$/.test(lower) || lower.indexOf('s3.amazonaws.com') !== -1) {
-      return { type: 'image', url: u };
+    if (lower.indexOf('box.com/shared/static/') !== -1) return { type: 'image', url: u, thumbUrl: u };
+    // Box shared links (/s/TOKEN) use the same token as the direct-static link.
+    var boxShareMatch = u.match(/\/s\/([a-zA-Z0-9]+)/);
+    if (lower.indexOf('box.com/s/') !== -1 && boxShareMatch) {
+      var boxDirectUrl = u.replace(/\/s\/([a-zA-Z0-9]+).*/, '/shared/static/' + boxShareMatch[1]);
+      return { type: 'image', url: boxDirectUrl, thumbUrl: boxDirectUrl };
     }
-    return { type: 'link', url: u };
+    if (lower.indexOf('box.com') !== -1) return { type: 'box', url: u, thumbUrl: u };
+    // Google Drive — convert share link to a direct-serving image URL.
+    if (lower.indexOf('drive.google.com') !== -1) {
+      var driveMatch = u.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || u.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+      if (driveMatch) {
+        return {
+          type: 'image',
+          url: 'https://drive.google.com/thumbnail?id=' + driveMatch[1] + '&sz=w1600',
+          thumbUrl: 'https://drive.google.com/thumbnail?id=' + driveMatch[1] + '&sz=w400'
+        };
+      }
+      return { type: 'link', url: u, thumbUrl: u };
+    }
+    if (lower.indexOf('canva.com') !== -1) return { type: 'canva', url: u, thumbUrl: u };
+    if (/\.(png|jpg|jpeg|gif|webp)(\?.*)?$/.test(lower) || lower.indexOf('s3.amazonaws.com') !== -1) {
+      return { type: 'image', url: u, thumbUrl: u };
+    }
+    return { type: 'link', url: u, thumbUrl: u };
   }
 
   function parseDateOnly(value) {
@@ -511,6 +571,20 @@
     return d.getFullYear() + '-' +
       ('0' + (d.getMonth() + 1)).slice(-2) + '-' +
       ('0' + d.getDate()).slice(-2);
+  }
+
+  // Earliest scheduled date among posts still in flight (not Approved/Published).
+  // Used once on initial load so the calendar opens on the month where work is
+  // actually waiting, instead of always defaulting to today's month (MJ, 2026-07-08).
+  function firstAttentionDate() {
+    var earliest = null;
+    state.posts.forEach(function (p) {
+      if (DONE_STATUSES[p.Status]) return;
+      var d = parseDateOnly(p.Scheduled_Date);
+      if (!d) return;
+      if (!earliest || d < earliest) earliest = d;
+    });
+    return earliest;
   }
 
   // ------------------------------------------------------------------
@@ -612,7 +686,7 @@
       } else { $('ptDate').style.display = 'none'; }
       // Media
       if (media.type === 'image') {
-        $('ptImg').src = url;
+        $('ptImg').src = media.url;
         $('ptImg').style.display = 'block';
         $('ptLink').style.display = 'none';
         $('ptMeta').textContent = '';
@@ -691,7 +765,7 @@
     }).join('');
     var thumb;
     if (media.type === 'image') {
-      thumb = '<img class="pc-thumb" src="' + esc(media.url) + '" alt="" onerror="this.style.display=\'none\'">';
+      thumb = '<img class="pc-thumb" src="' + esc(media.thumbUrl || media.url) + '" alt="" onerror="this.style.display=\'none\'">';
     } else if (primaryUrl) {
       var linkLabel = media.type === 'box' ? '&#128230; Open in Box &#8599;' : '&#128279; View media &#8599;';
       thumb = '<a class="pc-media-link" href="' + esc(primaryUrl) + '" target="_blank" rel="noopener noreferrer">' + linkLabel + '</a>';
@@ -717,12 +791,17 @@
   // ------------------------------------------------------------------
   function loadPosts(thenOpenId) {
     showSpinner(true);
-    run('api_getPosts').then(function (posts) {
+    isRefreshing = true;
+    return run('api_getPosts').then(function (posts) {
       state.posts = posts || [];
       renderCalendar();
       showSpinner(false);
+      isRefreshing = false;
       if (thenOpenId) openPost(thenOpenId);
-    }).catch(fail);
+    }).catch(function (err) {
+      isRefreshing = false;
+      fail(err);
+    });
   }
 
   // ------------------------------------------------------------------
@@ -876,7 +955,6 @@
         var stageLabel = post.Status === 'Awaiting_Corporate' ? 'Corporate'
           : post.Status === 'Corporate_Review' ? 'Corporate' : 'Local Client';
         msg += ' Use "Send to ' + stageLabel + '" in the toolbar to notify approvers.';
-        loadPendingBatch();
       }
       // Auto-save any comments the user typed but didn't explicitly submit.
       var commentSaves = [];
@@ -892,13 +970,13 @@
           if ($('newClientComment'))   $('newClientComment').value   = '';
           showSpinner(false);
           toast(msg);
-          loadPosts();
+          loadPosts().then(loadPendingBatch);
           closePanel();
         });
       }
       showSpinner(false);
       toast(msg);
-      loadPosts();
+      loadPosts().then(loadPendingBatch);
       closePanel();
     }).catch(fail);
   }
@@ -914,6 +992,8 @@
       var localCount        = (res && typeof res.localCount        === 'number') ? res.localCount        : 0;
       var corpCount         = (res && typeof res.corpCount         === 'number') ? res.corpCount         : 0;
       var revisingByCorpCount = (res && typeof res.revisingByCorpCount === 'number') ? res.revisingByCorpCount : 0;
+      var corpBatchStale     = !!(res && res.corpBatchStale);
+      var corpBatchStaleDays = (res && typeof res.corpBatchStaleDays === 'number') ? res.corpBatchStaleDays : 0;
 
       var badgeLocal    = $('badgeLocal');
       var btnLocal      = $('btnSendLocal');
@@ -931,7 +1011,12 @@
         btnLocal.style.display = 'none';
       }
       if (corpCount > 0) {
-        badgeCorp.textContent = '⚠️ ' + corpCount + ' ready — send to Corporate!';
+        // Flag when the local client hasn't sent to corporate in a while, so
+        // agency knows they may need to step in rather than wait indefinitely.
+        badgeCorp.textContent = corpBatchStale
+          ? '⚠️ ' + corpCount + ' ready — waiting ' + corpBatchStaleDays + ' day' + (corpBatchStaleDays !== 1 ? 's' : '') + ', local hasn’t sent to Corporate'
+          : '⚠️ ' + corpCount + ' ready — send to Corporate!';
+        badgeCorp.style.background = corpBatchStale ? '#b91c1c' : '#6366F1';
         badgeCorp.style.display = 'inline-block';
         btnCorp.style.display = 'inline-block';
       } else {
@@ -951,14 +1036,137 @@
     });
   }
 
-  function sendBatchForStage(stage, label) {
-    if (!confirm('Send all pending ' + label + ' notifications now?')) return;
-    showSpinner(true);
-    run('api_sendBatch', stage).then(function (res) {
-      showSpinner(false);
-      toast(res.sent + ' notification' + (res.sent !== 1 ? 's' : '') + ' sent to ' + label + '.');
-      loadPendingBatch();
-    }).catch(fail);
+  // ------------------------------------------------------------------
+  // Send picker — corporate gets recipient + channel choice, local gets
+  // recipient choice only (handy for testing against just MJ's own account
+  // instead of removing a real client from Authorized_Clients).
+  // ------------------------------------------------------------------
+  var sendPickerState = { kind: null, approvers: [] };
+
+  function openSendPicker(kind) {
+    sendPickerState.kind = kind;
+    $('sendPickerTitle').textContent = kind === 'corporate' ? 'Send to Corporate' : 'Send to Local Client';
+    $('sendPickerBody').innerHTML = '<div class="sp-empty">Loading…</div>';
+    $('btnConfirmSendPicker').textContent = 'Send';
+    $('btnConfirmSendPicker').onclick = confirmSendPicker;
+    $('sendPickerOverlay').className = 'overlay open';
+    $('sendPickerModal').className = 'send-picker-modal open';
+
+    var call = kind === 'corporate'
+      ? run('api_getCorporatePendingApprovers')
+      : run('api_getLocalPendingApprovers');
+
+    call.then(function (approvers) {
+      sendPickerState.approvers = approvers || [];
+      renderSendPicker();
+    }).catch(function (err) {
+      $('sendPickerBody').innerHTML = '<div class="sp-empty">Could not load recipients.</div>';
+      console.error('openSendPicker failed:', err && err.message ? err.message : String(err));
+    });
+  }
+
+  function closeSendPicker() {
+    $('sendPickerOverlay').className = 'overlay';
+    $('sendPickerModal').className = 'send-picker-modal';
+  }
+
+  function renderSendPicker() {
+    var kind = sendPickerState.kind;
+    var approvers = sendPickerState.approvers;
+    if (!approvers.length) {
+      $('sendPickerBody').innerHTML = '<div class="sp-empty">Nothing pending to send.</div>';
+      return;
+    }
+    var hint = kind === 'corporate'
+      ? 'Choose who gets this batch, and whether by email, a copyable portal link, or both.'
+      : 'Choose who gets this batch. Uncheck anyone you don’t want notified this round.';
+    var html = '<div class="sp-hint">' + hint + '</div>';
+    approvers.forEach(function (ap, i) {
+      var def = ap.DefaultChannel || 'Email';
+      var emailChecked = kind !== 'corporate' || def !== 'URL';
+      var urlChecked = kind === 'corporate' && (def === 'URL' || def === 'Both');
+      html += '<div class="sp-row" data-idx="' + i + '">';
+      html += '<label style="display:flex;align-items:center;gap:8px;flex:1;">';
+      html += '<input type="checkbox" class="sp-include" checked> ';
+      html += '<span class="sp-name">' + esc(ap.Name) + '</span></label>';
+      if (kind === 'corporate') {
+        html += '<div class="sp-channels">';
+        html += '<label><input type="checkbox" class="sp-email" ' + (emailChecked ? 'checked' : '') + '> Email</label>';
+        html += '<label><input type="checkbox" class="sp-url" ' + (urlChecked ? 'checked' : '') + '> URL</label>';
+        html += '</div>';
+      }
+      html += '</div>';
+    });
+    $('sendPickerBody').innerHTML = html;
+  }
+
+  function confirmSendPicker() {
+    var kind = sendPickerState.kind;
+    var rows = document.querySelectorAll('#sendPickerBody .sp-row');
+    if (kind === 'corporate') {
+      var selections = [];
+      rows.forEach(function (row) {
+        var idx = parseInt(row.getAttribute('data-idx'), 10);
+        var ap = sendPickerState.approvers[idx];
+        if (!row.querySelector('.sp-include').checked) return;
+        var viaEmail = row.querySelector('.sp-email').checked;
+        var viaUrl = row.querySelector('.sp-url').checked;
+        if (!viaEmail && !viaUrl) return;
+        selections.push({ Email: ap.Email, ViaEmail: viaEmail, ViaUrl: viaUrl });
+      });
+      if (!selections.length) { toast('Select at least one recipient and channel.', 'error'); return; }
+      showSpinner(true);
+      run('api_sendCorporateBatch', selections).then(function (res) {
+        showSpinner(false);
+        handleSendResult(res, 'Corporate');
+      }).catch(fail);
+    } else {
+      var emails = [];
+      rows.forEach(function (row) {
+        var idx = parseInt(row.getAttribute('data-idx'), 10);
+        var ap = sendPickerState.approvers[idx];
+        if (row.querySelector('.sp-include').checked) emails.push(ap.Email);
+      });
+      if (!emails.length) { toast('Select at least one recipient.', 'error'); return; }
+      showSpinner(true);
+      run('api_sendBatch', 'Local_Client', emails).then(function (res) {
+        showSpinner(false);
+        handleSendResult(res, 'Local Client');
+      }).catch(fail);
+    }
+  }
+
+  function handleSendResult(res, label) {
+    var sent   = (res && typeof res.sent   === 'number') ? res.sent   : 0;
+    var errors = (res && typeof res.errors === 'number') ? res.errors : 0;
+    var links  = (res && res.links) || [];
+    if (links.length) {
+      showLinkResults(links);
+    } else {
+      closeSendPicker();
+    }
+    if (errors > 0 && sent === 0) {
+      toast('Send failed — notifications could not be delivered.\nPlease try again or contact your Anthology FINN Partners team.', 'error');
+    } else if (errors > 0) {
+      toast(sent + ' notification' + (sent !== 1 ? 's' : '') + ' sent to ' + label + ', but ' + errors + ' failed to deliver.', 'error');
+    } else if (sent > 0 || links.length) {
+      toast((sent + links.length) + ' notification' + ((sent + links.length) !== 1 ? 's' : '') + ' processed for ' + label + '.');
+    } else {
+      toast('Nothing was pending to send.');
+    }
+    loadPendingBatch();
+  }
+
+  function showLinkResults(links) {
+    var html = '<div class="sp-hint">Copy each link and paste it into the corporate communications platform yourself, the app can’t deliver these automatically.</div>';
+    links.forEach(function (l) {
+      html += '<div class="sp-link-row"><div class="sp-link-name">' + esc(l.Name) + '</div>' +
+        '<input type="text" readonly value="' + esc(l.Url) + '" onclick="this.select();"></div>';
+    });
+    $('sendPickerTitle').textContent = 'Copy these links';
+    $('sendPickerBody').innerHTML = html;
+    $('btnConfirmSendPicker').textContent = 'Done';
+    $('btnConfirmSendPicker').onclick = closeSendPicker;
   }
 
   function reSendAllToCorporate() {
@@ -970,8 +1178,7 @@
       showSpinner(false);
       if (btn) btn.disabled = false;
       toast(res.message || 'Done.');
-      loadPosts();
-      loadPendingBatch();
+      loadPosts().then(loadPendingBatch);
     }).catch(function (err) {
       if (btn) btn.disabled = false;
       fail(err);
@@ -985,8 +1192,7 @@
     run('api_changeStatus', postId, 'Published').then(function () {
       showSpinner(false);
       toast('Post marked as Published.');
-      loadPosts();
-      loadPendingBatch();
+      loadPosts().then(loadPendingBatch);
     }).catch(function (err) {
       btn.disabled = false;
       fail(err);
@@ -1035,9 +1241,12 @@
   $('btnCancel').addEventListener('click', closePanel);
   $('overlay').addEventListener('click', closePanel);
   $('btnSave').addEventListener('click', savePost);
-  $('btnSendLocal').addEventListener('click', function () { sendBatchForStage('Local_Client', 'Local Client'); });
-  $('btnSendCorp').addEventListener('click', function () { sendBatchForStage('Corporate', 'Corporate'); });
+  $('btnSendLocal').addEventListener('click', function () { openSendPicker('local'); });
+  $('btnSendCorp').addEventListener('click', function () { openSendPicker('corporate'); });
   $('btnReSendAllCorp').addEventListener('click', reSendAllToCorporate);
+  $('btnCloseSendPicker').addEventListener('click', closeSendPicker);
+  $('btnCancelSendPicker').addEventListener('click', closeSendPicker);
+  $('sendPickerOverlay').addEventListener('click', closeSendPicker);
   $('btnAddInternal').addEventListener('click', function () {
     addComment('newInternalComment', 'Internal');
   });
@@ -1046,7 +1255,19 @@
   });
 
   // Initial load (deep-link support via ?post=POST-001).
-  loadPosts(state.openPostIdOnLoad || null);
+  loadPosts(state.openPostIdOnLoad || null).then(function () {
+    // One-time only: jump the calendar to whichever month actually has open
+    // work, so it doesn't silently default to today's month when everything
+    // that needs attention is next month (or last month). Skipped when
+    // deep-linking to a specific post so that flow behaves as before.
+    if (!state.openPostIdOnLoad) {
+      var target = firstAttentionDate();
+      if (target) {
+        state.current = new Date(target.getFullYear(), target.getMonth(), 1);
+        renderCalendar();
+      }
+    }
+  });
   // Delay badge load by 4 seconds so the initial posts call completes first,
   // avoiding "too many simultaneous invocations" on the Spreadsheet service.
   setTimeout(function () { loadPendingBatch(); }, 4000);
@@ -1059,12 +1280,16 @@
     setInterval(function () {
       var panel = $('panel');
       var panelOpen = panel && panel.className && panel.className.indexOf('open') !== -1;
-      if (panelOpen) return; // don't refresh while editing a post
+      if (panelOpen || isRefreshing) return; // don't refresh while editing a post or while another refresh is already in flight
+      isRefreshing = true;
       run('api_getPosts').then(function (posts) {
         state.posts = posts || [];
         renderCalendar();
+        isRefreshing = false;
         loadPendingBatch(); // refresh badge in case client actions queued new items
-      }).catch(function () {}); // silent fail — don't surface network errors during background refresh
+      }).catch(function () {
+        isRefreshing = false;
+      }); // silent fail — don't surface network errors during background refresh
     }, 60000);
   }, 15000);
 })();

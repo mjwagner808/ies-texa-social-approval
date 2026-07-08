@@ -132,11 +132,18 @@ function routeClient_(params) {
     return renderChangesForm_(client, params.post, token);
   }
 
+  // True when this link was hand-delivered (e.g. pasted into a corporate
+  // communications platform) rather than emailed. Drives the optional source-tag
+  // field on comments and the required decided-by-name field on decisions —
+  // see CONFIG.URL_DELIVERY_PARAM / sendCorporateBatch_.
+  var viaUrlDelivery = params[CONFIG.URL_DELIVERY_PARAM] === CONFIG.URL_DELIVERY_VALUE;
+
   var template = HtmlService.createTemplateFromFile('ClientPortal');
   template.token = token;
   template.accessLevel = client.Access_Level;
   template.approverName = dsClientDisplayName(client);
   template.approverEmail = client.Email;
+  template.viaUrlDelivery = viaUrlDelivery;
   return template.evaluate()
     .setTitle('IES-TEXA — Post Review Portal')
     .addMetaTag('viewport', 'width=device-width, initial-scale=1')
@@ -262,9 +269,14 @@ function handleChangesFormSubmit_(params) {
  * @param {string} postId
  * @param {string} decision - Approved or Changes_Requested
  * @param {string} notes - optional comment text
+ * @param {string} [decidedByName] - self-reported name of whoever actually made the
+ *   call, captured on the portal only when the session arrived via a URL-delivered
+ *   corporate link. Blank on email-delivered decisions.
+ * @param {string} [sourceTag] - optional casual label on the note itself (e.g.
+ *   "Legal", "Communications"), same URL-delivered-only scoping as decidedByName.
  * @return {{ok: boolean, message: string, post: Object}}
  */
-function processClientDecision_(client, postId, decision, notes) {
+function processClientDecision_(client, postId, decision, notes, decidedByName, sourceTag) {
   var post = dsGetPostById(postId);
   if (!post) throw new Error('Post not found: ' + postId);
 
@@ -283,16 +295,19 @@ function processClientDecision_(client, postId, decision, notes) {
   }
 
   // Record the decision.
-  dsRecordDecision(postId, stage, client.Email, approverName, decision, notes);
+  dsRecordDecision(postId, stage, client.Email, approverName, decision, notes, decidedByName);
 
   // Save the optional comment as a client-visible comment.
   if (notes) {
-    dsAddComment(postId, client.Email, approverName, notes, CONFIG.COMMENT_TYPES.CLIENT_REPLY);
+    var commentType = client.Access_Level === CONFIG.ACCESS_LEVELS.CORPORATE
+      ? CONFIG.COMMENT_TYPES.CORPORATE_REPLY
+      : CONFIG.COMMENT_TYPES.CLIENT_REPLY;
+    dsAddComment(postId, client.Email, approverName, notes, commentType, sourceTag);
   }
 
   // Advance or roll back status.
   if (decision === CONFIG.APPROVAL_STATUSES.APPROVED) {
-    if (dsAllApprovedAtStage(postId, stage)) {
+    if (dsStageApproved(postId, stage)) {
       var nextStatus = nextStatusAfterApproval(post.Status);
       if (nextStatus) {
         dsUpdatePostStatus(postId, nextStatus, client.Email);
@@ -322,12 +337,14 @@ function processClientDecision_(client, postId, decision, notes) {
 
   var updatedPost = dsGetPostById(postId);
 
-  // Notify the agency.
-  try {
-    sendAgencyActionEmail(updatedPost, approverName, decision, notes);
-  } catch (err) {
-    console.error('Agency notification failed: ' + err.message);
-  }
+  // No immediate per-decision agency email of any kind, approved or changes
+  // requested. Everything rides the same batch-and-alert pattern MJ described
+  // 2026-07-07: an alert badge shows what's ready, and the reviewer can
+  // hit send whenever they want, one post or a full month at once. Corporate's
+  // Changes_Requested is covered by the existing corp_batch queue + Send
+  // Responses below. Local's Changes_Requested is covered by
+  // dsGetPendingLocalChangeRequests, flushed alongside Send to Corporate (see
+  // api_localSendToCorporate) or on its own if nothing's pending for corporate.
 
   // When corporate acts, queue a batched response notification rather than sending
   // immediately. Corporate will click "Send Responses" in their toolbar when they're
@@ -542,7 +559,21 @@ function api_getPendingBatch() {
       revisingByCorpCount++;
     }
   });
-  return { localCount: localCount, corpCount: corpCount, revisingByCorpCount: revisingByCorpCount };
+  // Flag when nothing has been sent to corporate in a while, so the agency
+  // toolbar can offer to step in if local hasn't gotten to it.
+  var corpBatchStaleDays = 0;
+  var oldestCorp = dsGetOldestUnsentCorporateBatchDate();
+  if (oldestCorp) {
+    corpBatchStaleDays = Math.floor((Date.now() - oldestCorp.getTime()) / (24 * 60 * 60 * 1000));
+  }
+
+  return {
+    localCount: localCount,
+    corpCount: corpCount,
+    revisingByCorpCount: revisingByCorpCount,
+    corpBatchStaleDays: corpBatchStaleDays,
+    corpBatchStale: corpBatchStaleDays >= CONFIG.CORP_SEND_STALENESS_DAYS
+  };
 }
 
 /**
@@ -590,17 +621,294 @@ function api_agencyReSendAllToCorporate() {
 }
 
 /**
- * Sends batch-queued notifications for a specific stage as a DIGEST —
- * one email per approver covering all their pending posts.
- * @param {string} stage - CONFIG.STAGES value (Local_Client or Corporate). If omitted, sends all.
+ * Builds a corporate approver's portal link.
+ * @param {string} token - the approver's Access_Token
+ * @param {boolean} [viaUrl] - true to tag this link as hand-delivered through a
+ *   non-email channel (e.g. pasted into the client's communications platform),
+ *   which flips on the optional source-tag / required decided-by-name fields
+ *   in the portal. Omit for the normal email-delivered link.
+ * @return {string}
+ */
+function buildCorporatePortalUrl_(token, viaUrl) {
+  var url = CONFIG.APP_URL + '?page=client&token=' + encodeURIComponent(token);
+  if (viaUrl) {
+    url += '&' + CONFIG.URL_DELIVERY_PARAM + '=' + CONFIG.URL_DELIVERY_VALUE;
+  }
+  return url;
+}
+
+/**
+ * Returns corporate approvers who currently have at least one pending (unsent)
+ * batch notification, with their default delivery channel. Backs the
+ * Send to Corporate picker on both the agency and local portals.
+ * @return {Array<{Email: string, Name: string, DefaultChannel: string}>}
+ */
+function getPendingCorporateApprovers_() {
+  var pendingEmails = {};
+  dsGetUnsentNotifications().forEach(function (row) {
+    if (String(row.Send_At).toLowerCase() === 'batch' &&
+        String(row.Stage) === CONFIG.STAGES.CORPORATE) {
+      pendingEmails[String(row.Approver_Email).toLowerCase()] = true;
+    }
+  });
+  return dsGetAuthorizedClients(CONFIG.ACCESS_LEVELS.CORPORATE)
+    .filter(function (ap) { return pendingEmails[String(ap.Email).toLowerCase()]; })
+    .map(function (ap) {
+      return {
+        Email: ap.Email,
+        Name: dsClientDisplayName(ap),
+        DefaultChannel: ap.Default_Channel || CONFIG.DELIVERY_CHANNELS.EMAIL
+      };
+    });
+}
+
+/**
+ * Agency-side: corporate approvers with something pending to send, for the picker.
+ * @return {Array<Object>}
+ */
+function api_getCorporatePendingApprovers() {
+  requireAgencyUser_();
+  return getPendingCorporateApprovers_();
+}
+
+/**
+ * Local-side: same list as the agency picker, restricted to Local-access tokens.
+ * @param {string} token
+ * @return {Array<Object>}
+ */
+function api_clientGetCorporateApprovers(token) {
+  var client = requireClient_(token);
+  if (client.Access_Level !== CONFIG.ACCESS_LEVELS.LOCAL) {
+    throw new Error('Only local approvers can view this.');
+  }
+  return getPendingCorporateApprovers_();
+}
+
+/**
+ * Shared implementation for flushing pending corporate batch notifications.
+ * This is the single place that handles recipient selection, delivery channel
+ * (email and/or a hand-deliverable portal link), advancing post status, and the
+ * FYI notification to whichever side didn't trigger the send. Both the agency
+ * "Send to Corporate" button and the local client's "Send to Corporate" action
+ * call this, so a change here applies identically to both — nobody has to
+ * remember to update two copies of the same logic.
+ * @param {Array<{Email:string, ViaEmail:boolean, ViaUrl:boolean}>} [selections] -
+ *   which corporate approvers to flush this round and how. Omit to flush every
+ *   corporate approver with a pending batch notification via their Default_Channel
+ *   (falling back to Email if unset) — the "just send it" default action.
+ * @param {{email:string, name:string, role:string}} triggeredBy - role is 'agency' or 'local'.
+ * @return {{ok: boolean, sent: number, errors: number, links: Array<{Email:string, Name:string, Url:string}>}}
+ */
+function sendCorporateBatch_(selections, triggeredBy) {
+  var unsent = dsGetUnsentNotifications().filter(function (row) {
+    return String(row.Send_At).toLowerCase() === 'batch' &&
+           String(row.Stage) === CONFIG.STAGES.CORPORATE;
+  });
+  if (!unsent.length) {
+    return { ok: true, sent: 0, errors: 0, links: [] };
+  }
+
+  var allApprovers = dsGetAuthorizedClients();
+  var approverLookup = {};
+  allApprovers.forEach(function (ap) {
+    approverLookup[String(ap.Email).toLowerCase()] = ap;
+  });
+
+  // Build the selection map. No selections passed => everyone pending, via their default.
+  var selectionMap = {};
+  if (selections && selections.length) {
+    selections.forEach(function (s) {
+      selectionMap[String(s.Email).toLowerCase()] = {
+        viaEmail: !!s.ViaEmail,
+        viaUrl: !!s.ViaUrl
+      };
+    });
+  } else {
+    var pendingEmails = {};
+    unsent.forEach(function (row) { pendingEmails[String(row.Approver_Email).toLowerCase()] = true; });
+    Object.keys(pendingEmails).forEach(function (email) {
+      var ap = approverLookup[email];
+      var def = ap ? String(ap.Default_Channel || '') : '';
+      selectionMap[email] = {
+        viaEmail: def !== CONFIG.DELIVERY_CHANNELS.URL,
+        viaUrl: def === CONFIG.DELIVERY_CHANNELS.URL || def === CONFIG.DELIVERY_CHANNELS.BOTH
+      };
+    });
+  }
+
+  // Only process rows for approvers selected this round. Everyone else's
+  // notifications stay queued, unsent, for a future send.
+  var byApprover = {};
+  unsent.forEach(function (row) {
+    var key = String(row.Approver_Email).toLowerCase();
+    if (!selectionMap[key]) return;
+    if (!byApprover[key]) {
+      byApprover[key] = { rows: [], posts: [], approver: approverLookup[key] || null, name: row.Approver_Name };
+    }
+    byApprover[key].rows.push(row);
+  });
+
+  // Advance Awaiting_Corporate posts referenced by the selected rows.
+  var advancedIds = {};
+  Object.keys(byApprover).forEach(function (key) {
+    byApprover[key].rows.forEach(function (row) {
+      var pid = row.Post_ID;
+      if (advancedIds[pid]) return;
+      var post = dsGetPostById(pid);
+      if (post && String(post.Status) === CONFIG.STATUSES.AWAITING_CORPORATE) {
+        try {
+          dsUpdatePostStatus(pid, CONFIG.STATUSES.CORPORATE, triggeredBy.email);
+          advancedIds[pid] = true;
+        } catch (err) {
+          console.error('sendCorporateBatch_: failed to advance ' + pid + ': ' + err.message);
+        }
+      }
+    });
+  });
+
+  // Re-fetch posts after the status advance so emails/links reflect it.
+  Object.keys(byApprover).forEach(function (key) {
+    byApprover[key].rows.forEach(function (row) {
+      var fresh = dsGetPostById(row.Post_ID);
+      if (fresh) byApprover[key].posts.push(fresh);
+    });
+  });
+
+  var sent = 0;
+  var errors = 0;
+  var links = [];
+
+  Object.keys(byApprover).forEach(function (key) {
+    var data = byApprover[key];
+    var selection = selectionMap[key] || { viaEmail: true, viaUrl: false };
+    if (!data.posts.length || !data.approver) {
+      data.rows.forEach(function (r) { dsMarkNotificationSent(r.ID); });
+      return;
+    }
+    var approverName = data.name || dsClientDisplayName(data.approver);
+    var channelLabel = (selection.viaEmail && selection.viaUrl)
+      ? CONFIG.DELIVERY_CHANNELS.BOTH
+      : (selection.viaUrl ? CONFIG.DELIVERY_CHANNELS.URL : CONFIG.DELIVERY_CHANNELS.EMAIL);
+    var emailOk = true;
+
+    if (selection.viaEmail) {
+      try {
+        sendClientDigestEmail({
+          Email: data.approver.Email,
+          Name: approverName,
+          Access_Token: data.approver.Access_Token
+        }, data.posts);
+        data.rows.forEach(function (r) { dsMarkApprovalEmailSent(r.Post_ID, r.Stage, data.approver.Email); });
+      } catch (err) {
+        console.error('sendCorporateBatch_ email ' + key + ': ' + err.message);
+        emailOk = false;
+      }
+    }
+
+    if (selection.viaUrl) {
+      links.push({
+        Email: data.approver.Email,
+        Name: approverName,
+        Url: buildCorporatePortalUrl_(data.approver.Access_Token, true)
+      });
+    }
+
+    if (emailOk) {
+      data.rows.forEach(function (r) { dsMarkNotificationSent(r.ID, channelLabel); });
+      sent += data.rows.length;
+    } else {
+      errors += data.rows.length;
+    }
+  });
+
+  // FYI to whichever side didn't trigger this send.
+  if (sent > 0) {
+    try {
+      var sentPosts = [];
+      var seen = {};
+      Object.keys(byApprover).forEach(function (k) {
+        (byApprover[k].posts || []).forEach(function (p) {
+          if (!seen[p.ID]) { seen[p.ID] = true; sentPosts.push(p); }
+        });
+      });
+      if (sentPosts.length) {
+        if (triggeredBy.role === 'local') {
+          sendAgencyCorpSentFYIEmail(sentPosts, triggeredBy.name);
+        } else {
+          var localFYIApprovers = dsGetAuthorizedClients(CONFIG.ACCESS_LEVELS.LOCAL).map(function (ap) {
+            return { Email: ap.Email, Name: dsClientDisplayName(ap), Access_Token: ap.Access_Token };
+          });
+          sendLocalCorpBatchFYIEmail(localFYIApprovers, sentPosts);
+        }
+      }
+    } catch (err) {
+      console.error('sendCorporateBatch_: FYI failed: ' + err.message);
+    }
+  }
+
+  return { ok: true, sent: sent, errors: errors, links: links };
+}
+
+/**
+ * Agency-side entry point for the Send to Corporate picker.
+ * @param {Array<{Email:string, ViaEmail:boolean, ViaUrl:boolean}>} [selections]
+ * @return {{ok: boolean, sent: number, errors: number, links: Array<Object>}}
+ */
+function api_sendCorporateBatch(selections) {
+  var user = requireAgencyUser_();
+  return sendCorporateBatch_(selections, {
+    email: user.Email,
+    name: user.Full_Name || user.Email,
+    role: 'agency'
+  });
+}
+
+/**
+ * Returns Local-access approvers who currently have a pending batch notification.
+ * Backs the agency's Local Client send picker (e.g. so MJ can test against just
+ * her own account without removing Ali from Authorized_Clients).
+ * @return {Array<{Email: string, Name: string}>}
+ */
+function api_getLocalPendingApprovers() {
+  requireAgencyUser_();
+  var pendingEmails = {};
+  dsGetUnsentNotifications().forEach(function (row) {
+    if (String(row.Send_At).toLowerCase() === 'batch' &&
+        String(row.Stage) === CONFIG.STAGES.LOCAL_CLIENT) {
+      pendingEmails[String(row.Approver_Email).toLowerCase()] = true;
+    }
+  });
+  return dsGetAuthorizedClients(CONFIG.ACCESS_LEVELS.LOCAL)
+    .filter(function (ap) { return pendingEmails[String(ap.Email).toLowerCase()]; })
+    .map(function (ap) {
+      return { Email: ap.Email, Name: dsClientDisplayName(ap) };
+    });
+}
+
+/**
+ * Sends batch-queued Local_Client notifications as a DIGEST — one email per
+ * approver covering all their pending posts. Corporate sends always go through
+ * api_sendCorporateBatch / sendCorporateBatch_ instead, since that path is
+ * recipient- and channel-aware; this function only ever handles Local_Client.
+ * @param {string} [stage] - CONFIG.STAGES value. Defaults to Local_Client.
+ * @param {Array<string>} [selectedEmails] - restrict the send to these approver
+ *   emails. Omit to send to everyone with a pending notification (unchanged
+ *   default behavior).
  * @return {{sent: number, errors: number}}
  */
-function api_sendBatch(stage) {
+function api_sendBatch(stage, selectedEmails) {
   requireAgencyUser_();
+  var targetStage = stage || CONFIG.STAGES.LOCAL_CLIENT;
+  var selectedSet = null;
+  if (selectedEmails && selectedEmails.length) {
+    selectedSet = {};
+    selectedEmails.forEach(function (e) { selectedSet[String(e).toLowerCase()] = true; });
+  }
   var unsent = dsGetUnsentNotifications();
   var batch = unsent.filter(function (row) {
     if (String(row.Send_At).toLowerCase() !== 'batch') return false;
-    if (stage) return String(row.Stage) === String(stage);
+    if (String(row.Stage) !== targetStage) return false;
+    if (selectedSet && !selectedSet[String(row.Approver_Email).toLowerCase()]) return false;
     return true;
   });
 
@@ -628,50 +936,23 @@ function api_sendBatch(stage) {
   var sent = 0;
   var errors = 0;
 
-  // For a corporate send: advance any Awaiting_Corporate posts to Corporate_Review
-  // so corporate approvers see the correct status in their portal.
-  if (String(stage) === CONFIG.STAGES.CORPORATE) {
-    var advancedIds = {};
-    batch.forEach(function (row) {
-      var pid = row.Post_ID;
-      if (advancedIds[pid]) return;
-      var post = dsGetPostById(pid);
-      if (post && String(post.Status) === CONFIG.STATUSES.AWAITING_CORPORATE) {
-        try {
-          dsUpdatePostStatus(pid, CONFIG.STATUSES.CORPORATE, 'batch_send');
-          advancedIds[pid] = true;
-        } catch (err) {
-          console.error('api_sendBatch: failed to advance ' + pid + ': ' + err.message);
-        }
-      }
-    });
-  }
-
   Object.keys(byApprover).forEach(function (key) {
     var data = byApprover[key];
-    if (!data.posts.length) {
-      // No posts resolved — just mark rows sent so queue stays clean.
-      data.rows.forEach(function (r) { dsMarkNotificationSent(r.ID); });
-      return;
-    }
-    var approver = data.approver;
-    if (!approver) {
+    if (!data.posts.length || !data.approver) {
       data.rows.forEach(function (r) { dsMarkNotificationSent(r.ID); });
       return;
     }
     try {
-      // Refresh post data so the email reflects the updated Corporate_Review status.
       var freshPosts = data.posts.map(function (p) {
         return dsGetPostById(p.ID) || p;
       });
       sendClientDigestEmail({
-        Email: approver.Email,
-        Name: data.name || dsClientDisplayName(approver),
-        Access_Token: approver.Access_Token
+        Email: data.approver.Email,
+        Name: data.name || dsClientDisplayName(data.approver),
+        Access_Token: data.approver.Access_Token
       }, freshPosts);
-      // Mark all rows for this approver as sent.
       data.rows.forEach(function (r) {
-        dsMarkApprovalEmailSent(r.Post_ID, r.Stage, approver.Email);
+        dsMarkApprovalEmailSent(r.Post_ID, r.Stage, data.approver.Email);
         dsMarkNotificationSent(r.ID);
       });
       sent += data.rows.length;
@@ -680,29 +961,6 @@ function api_sendBatch(stage) {
       errors += data.rows.length;
     }
   });
-
-  // When sending to corporate, also notify local approvers with a FYI digest.
-  // Local has no action to take — this is a courtesy notification that the
-  // batch is now in corporate review.
-  if (sent > 0 && String(stage) === CONFIG.STAGES.CORPORATE) {
-    try {
-      var allSentPosts = [];
-      var sentPids = {};
-      Object.keys(byApprover).forEach(function (k) {
-        (byApprover[k].posts || []).forEach(function (p) {
-          if (!sentPids[p.ID]) { sentPids[p.ID] = true; allSentPosts.push(p); }
-        });
-      });
-      if (allSentPosts.length) {
-        var localFYIApprovers = dsGetAuthorizedClients(CONFIG.ACCESS_LEVELS.LOCAL).map(function (ap) {
-          return { Email: ap.Email, Name: dsClientDisplayName(ap), Access_Token: ap.Access_Token };
-        });
-        sendLocalCorpBatchFYIEmail(localFYIApprovers, allSentPosts);
-      }
-    } catch (err) {
-      console.error('api_sendBatch: local FYI failed: ' + err.message);
-    }
-  }
 
   return { sent: sent, errors: errors };
 }
@@ -819,10 +1077,26 @@ function api_clientGetQueue(token) {
 function api_clientGetAllPosts(token) {
   var client = requireClient_(token);
   var isCorp = client.Access_Level === CONFIG.ACCESS_LEVELS.CORPORATE;
+
+  // For corporate: build a lookup of post IDs that have at least one Corporate-stage
+  // approval record. Revising posts are only visible to corporate if they actually
+  // submitted a decision on that post — prevents posts that Local Client sent back
+  // for revisions from leaking into the corporate portal.
+  var corpReviewedIds = null;
+  if (isCorp) {
+    corpReviewedIds = {};
+    var approvalData = readSheet_(CONFIG.SHEETS.APPROVALS);
+    approvalData.rows.forEach(function (r) {
+      if (String(r.Stage) === CONFIG.STAGES.CORPORATE) {
+        corpReviewedIds[String(r.Post_ID)] = true;
+      }
+    });
+  }
+
   var visible = isCorp
-    // Corporate sees: their review queue, Revising (so post doesn't disappear after they request changes),
-    // plus final states.
-    ? [CONFIG.STATUSES.REVISING, CONFIG.STATUSES.CORPORATE, CONFIG.STATUSES.APPROVED, CONFIG.STATUSES.PUBLISHED]
+    // Corporate sees: their review queue plus final states.
+    // Revising is added selectively below (only posts corporate has already reviewed).
+    ? [CONFIG.STATUSES.CORPORATE, CONFIG.STATUSES.APPROVED, CONFIG.STATUSES.PUBLISHED]
     // Local sees: their own queue, Awaiting_Corporate (so they can trigger the send),
     // Revising, and all downstream states.
     : [CONFIG.STATUSES.LOCAL_CLIENT, CONFIG.STATUSES.REVISING,
@@ -830,8 +1104,15 @@ function api_clientGetAllPosts(token) {
        CONFIG.STATUSES.APPROVED, CONFIG.STATUSES.PUBLISHED];
   var allowed = {};
   visible.forEach(function (s) { allowed[s] = true; });
+
   return dsGetAllPosts()
-    .filter(function (p) { return !!allowed[p.Status]; })
+    .filter(function (p) {
+      if (p.Status === CONFIG.STATUSES.REVISING && isCorp) {
+        // Only show corporate a Revising post if they submitted a decision on it.
+        return !!(corpReviewedIds && corpReviewedIds[p.ID]);
+      }
+      return !!allowed[p.Status];
+    })
     .map(stripInternalFields_);
 }
 
@@ -851,102 +1132,62 @@ function api_localGetPendingCorpCount(token) {
 }
 
 /**
- * Local portal: sends ALL Awaiting_Corporate posts to Corporate_Review in bulk.
- * Advances post statuses, fires digest emails to corporate approvers (same as
- * agency api_sendBatch), sends a FYI email to agency.
+ * Returns the count of pending Changes_Requested decisions awaiting an agency
+ * notification. Used alongside api_localGetPendingCorpCount to build the
+ * local portal's combined "ready to send" badge.
  * @param {string} token - local client token
- * @return {{ok: boolean, sent: number, errors: number}}
+ * @return {{pendingChangesCount: number}}
  */
-function api_localSendToCorporate(token) {
+function api_localGetPendingChangesCount(token) {
+  var client = requireClient_(token);
+  if (client.Access_Level !== CONFIG.ACCESS_LEVELS.LOCAL) return { pendingChangesCount: 0 };
+  return { pendingChangesCount: dsGetPendingLocalChangeRequests().length };
+}
+
+/**
+ * Local portal: sends pending Awaiting_Corporate notifications to Corporate_Review.
+ * Delegates to sendCorporateBatch_, the same function the agency's Send to
+ * Corporate button uses, so recipient selection and channel handling behave
+ * identically regardless of who triggers the send.
+ *
+ * Also flushes any pending Changes_Requested notices to agency in the same
+ * click, so local never needs a second button for that (MJ 2026-07-07:
+ * changes requested rides the same batch, but still works as a one-off send
+ * at any time). This runs even if there's nothing pending for corporate.
+ * @param {string} token - local client token
+ * @param {Array<{Email:string, ViaEmail:boolean, ViaUrl:boolean}>} [selections] -
+ *   omit to send to everyone pending via their default channel.
+ * @return {{ok: boolean, sent: number, errors: number, links: Array<Object>, changesNotified: number}}
+ */
+function api_localSendToCorporate(token, selections) {
   var client = requireClient_(token);
   if (client.Access_Level !== CONFIG.ACCESS_LEVELS.LOCAL) {
     throw new Error('Only local approvers can trigger this action.');
   }
+  var triggeredBy = {
+    email: client.Email,
+    name: dsClientDisplayName(client),
+    role: 'local'
+  };
+  var result = sendCorporateBatch_(selections, triggeredBy);
+  result.changesNotified = 0;
 
-  // Gather all Awaiting_Corporate posts that have unsent corporate notifications.
-  var unsent = dsGetUnsentNotifications().filter(function (row) {
-    return String(row.Send_At).toLowerCase() === 'batch' &&
-           String(row.Stage) === CONFIG.STAGES.CORPORATE;
-  });
-
-  if (!unsent.length) {
-    return { ok: true, sent: 0, errors: 0 };
-  }
-
-  // Advance posts and group notifications by corporate approver (same as sendBatch).
-  var advancedIds = {};
-  var byApprover = {};
-  var allApprovers = dsGetAuthorizedClients();
-  var approverLookup = {};
-  allApprovers.forEach(function (ap) {
-    approverLookup[String(ap.Email).toLowerCase()] = ap;
-  });
-
-  unsent.forEach(function (row) {
-    var pid = row.Post_ID;
-    if (!advancedIds[pid]) {
-      var post = dsGetPostById(pid);
-      if (post && String(post.Status) === CONFIG.STATUSES.AWAITING_CORPORATE) {
-        try {
-          dsUpdatePostStatus(pid, CONFIG.STATUSES.CORPORATE, client.Email);
-          advancedIds[pid] = true;
-        } catch (err) {
-          console.error('api_localSendToCorporate: advance failed for ' + pid + ': ' + err.message);
-        }
+  var pendingChanges = dsGetPendingLocalChangeRequests();
+  if (pendingChanges.length) {
+    try {
+      var items = pendingChanges.map(function (r) {
+        return { post: dsGetPostById(r.Post_ID), notes: r.Decision_Notes };
+      }).filter(function (i) { return !!i.post; });
+      if (items.length) {
+        sendAgencyLocalChangesFYIEmail(items, triggeredBy.name);
+        dsMarkChangeRequestsNotified(pendingChanges.map(function (r) { return r.ID; }));
+        result.changesNotified = items.length;
       }
-    }
-    var key = String(row.Approver_Email).toLowerCase();
-    if (!byApprover[key]) {
-      byApprover[key] = { rows: [], posts: [], approver: approverLookup[key] || null, name: row.Approver_Name };
-    }
-    byApprover[key].rows.push(row);
-    var fresh = dsGetPostById(row.Post_ID);
-    if (fresh) byApprover[key].posts.push(fresh);
-  });
-
-  var sent = 0;
-  var errors = 0;
-
-  Object.keys(byApprover).forEach(function (key) {
-    var data = byApprover[key];
-    if (!data.posts.length || !data.approver) {
-      data.rows.forEach(function (r) { dsMarkNotificationSent(r.ID); });
-      return;
-    }
-    try {
-      sendClientDigestEmail({
-        Email: data.approver.Email,
-        Name: data.name || dsClientDisplayName(data.approver),
-        Access_Token: data.approver.Access_Token
-      }, data.posts);
-      data.rows.forEach(function (r) {
-        dsMarkApprovalEmailSent(r.Post_ID, r.Stage, data.approver.Email);
-        dsMarkNotificationSent(r.ID);
-      });
-      sent += data.rows.length;
     } catch (err) {
-      console.error('api_localSendToCorporate approver ' + key + ': ' + err.message);
-      errors += data.rows.length;
-    }
-  });
-
-  // FYI to agency: local has sent posts to corporate.
-  if (sent > 0) {
-    try {
-      var sentPosts = [];
-      var seen = {};
-      Object.keys(byApprover).forEach(function (k) {
-        (byApprover[k].posts || []).forEach(function (p) {
-          if (!seen[p.ID]) { seen[p.ID] = true; sentPosts.push(p); }
-        });
-      });
-      sendAgencyCorpSentFYIEmail(sentPosts, dsClientDisplayName(client));
-    } catch (err) {
-      console.error('api_localSendToCorporate: agency FYI failed: ' + err.message);
+      console.error('api_localSendToCorporate: changes-requested FYI failed: ' + err.message);
     }
   }
-
-  return { ok: true, sent: sent, errors: errors };
+  return result;
 }
 
 /**
@@ -1159,16 +1400,20 @@ function api_clientUndoDecision(token, postId) {
  * @param {string} token
  * @param {string} postId
  * @param {string} commentText
+ * @param {string} [sourceTag] - optional self-reported source (e.g. "Legal",
+ *   "Communications"), only ever sent by the portal when the session arrived
+ *   via a URL-delivered corporate link.
  * @return {{ok: boolean}}
  */
-function api_clientAddComment(token, postId, commentText) {
+function api_clientAddComment(token, postId, commentText, sourceTag) {
   var client = requireClient_(token);
   commentText = String(commentText || '').trim();
   if (!commentText) throw new Error('Comment cannot be empty.');
   var commentType = client.Access_Level === CONFIG.ACCESS_LEVELS.CORPORATE
     ? CONFIG.COMMENT_TYPES.CORPORATE_REPLY
     : CONFIG.COMMENT_TYPES.CLIENT_REPLY;
-  dsAddComment(postId, client.Email, dsClientDisplayName(client), commentText, commentType);
+  dsAddComment(postId, client.Email, dsClientDisplayName(client), commentText, commentType,
+    String(sourceTag || '').trim());
   return { ok: true };
 }
 
@@ -1178,15 +1423,19 @@ function api_clientAddComment(token, postId, commentText) {
  * @param {string} postId
  * @param {string} decision - 'approve' or 'changes'
  * @param {string} comment
+ * @param {string} [decidedByName] - required by the front end on URL-delivered
+ *   corporate sessions; self-reported name of whoever actually clicked the button.
+ * @param {string} [sourceTag] - optional casual label on the note (e.g. "Legal"),
+ *   same URL-delivered-only scoping as decidedByName.
  * @return {{ok: boolean, message: string}}
  */
-function api_clientSubmitDecision(token, postId, decision, comment) {
+function api_clientSubmitDecision(token, postId, decision, comment, decidedByName, sourceTag) {
   var client = requireClient_(token);
   var decisionValue = decision === 'approve'
     ? CONFIG.APPROVAL_STATUSES.APPROVED
     : CONFIG.APPROVAL_STATUSES.CHANGES_REQUESTED;
   var result = processClientDecision_(client, postId, decisionValue,
-    String(comment || '').trim());
+    String(comment || '').trim(), String(decidedByName || '').trim(), String(sourceTag || '').trim());
   return { ok: result.ok, message: result.message };
 }
 

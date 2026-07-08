@@ -9,7 +9,11 @@
   var IS_CORPORATE = _RAW_ACCESS_LEVEL === 'Corporate';
   var APPROVER_NAME = '<?= approverName ?>';
   var APPROVER_EMAIL = '<?= approverEmail ?>';
-  console.log('[Portal] accessLevel="' + _RAW_ACCESS_LEVEL + '" IS_CORPORATE=' + IS_CORPORATE + ' user=' + '<?= approverEmail ?>');
+  // True when this link was hand-delivered (e.g. pasted into a corporate
+  // communications platform) instead of emailed. Drives the optional source
+  // tag on comments and the required decided-by name on decisions.
+  var VIA_URL_DELIVERY = <?= viaUrlDelivery ? 'true' : 'false' ?>;
+  console.log('[Portal] accessLevel="' + _RAW_ACCESS_LEVEL + '" IS_CORPORATE=' + IS_CORPORATE + ' user=' + '<?= approverEmail ?>' + ' viaUrlDelivery=' + VIA_URL_DELIVERY);
 </script>
 
 <style>
@@ -209,6 +213,14 @@
     display: block; margin: 4px 0;
   }
 
+  /* Google Drive embedded viewer (images and video, e.g. Reels) — taller
+     than a static thumbnail so a vertical video has room to actually play. */
+  .media-drive-frame {
+    width: 100%; height: 360px;
+    border-radius: 6px; border: 1px solid #e0e0e0;
+    display: block; margin: 4px 0;
+  }
+
   /* ---- Discussion ---- */
   .discussion-head {
     font-size: 13px; font-weight: 700; color: #1a1a2e;
@@ -291,6 +303,7 @@
     transition: opacity 0.25s; white-space: pre-line; text-align: center;
   }
   .toast.show { opacity: 1; }
+  .toast.error { background: #b91c1c; }
 
   .spinner-veil {
     display: none; position: fixed; inset: 0;
@@ -351,6 +364,46 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
+
+  /* ---- Send picker modal (Local: send to corporate) ---- */
+  .send-picker-modal {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -48%);
+    width: 480px; max-width: 92vw; max-height: 82vh; background: #fff;
+    border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+    z-index: 210; display: none; flex-direction: column; overflow: hidden;
+  }
+  .send-picker-modal.open { display: flex; }
+  .sp-header {
+    padding: 16px 20px 12px; border-bottom: 1px solid #e0e0e0;
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .sp-header h2 { font-size: 16px; }
+  .sp-body { padding: 16px 20px; overflow-y: auto; }
+  .sp-footer { padding: 14px 20px; border-top: 1px solid #e0e0e0; display: flex; gap: 10px; justify-content: flex-end; }
+  .sp-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; border-bottom: 1px solid #f0f1f4; font-size: 13px; }
+  .sp-row:last-child { border-bottom: none; }
+  .sp-name { flex: 1; font-weight: 600; }
+  .sp-channels { display: flex; gap: 12px; font-size: 12px; color: #555; }
+  .sp-channels label { display: flex; align-items: center; gap: 4px; }
+  .sp-empty { color: #888; font-size: 13px; padding: 12px 0; }
+  .sp-hint { font-size: 12px; color: #888; margin-bottom: 12px; }
+  .sp-link-row { border: 1px solid #e0e0e0; border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+  .sp-link-row .sp-link-name { font-weight: 700; font-size: 13px; margin-bottom: 6px; }
+  .sp-link-row input { width: 100%; font: inherit; font-size: 12px; padding: 7px 9px; border: 1px solid #e0e0e0; border-radius: 6px; background: #fafbfc; }
+
+  /* ---- Source tag / decided-by-name (URL-delivered corporate sessions only) ---- */
+  .source-tag-wrap { margin-bottom: 10px; }
+  .source-tag-wrap input {
+    width: 100%; border: 1px solid #d0d5dd; border-radius: 8px;
+    padding: 8px 10px; font: inherit; font-size: 12px;
+  }
+  .source-tag-wrap .stw-label { font-size: 11px; color: #888; margin-bottom: 4px; display: block; }
+  .decided-by-wrap { margin-bottom: 12px; }
+  .decided-by-wrap label { font-size: 12px; font-weight: 600; color: #666; margin-bottom: 6px; display: block; }
+  .decided-by-wrap input {
+    width: 100%; border: 1px solid #d0d5dd; border-radius: 8px;
+    padding: 10px 12px; font: inherit; font-size: 13px;
+  }
 </style>
 
 <!-- ===================== HTML ===================== -->
@@ -380,6 +433,19 @@
   <div id="calendar" class="calendar"></div>
 </div>
 
+<div id="sendPickerOverlay" class="overlay"></div>
+<div id="sendPickerModal" class="send-picker-modal">
+  <div class="sp-header">
+    <h2 id="sendPickerTitle">Send to Corporate</h2>
+    <button id="btnCloseSendPicker" class="panel-close">&#10005;</button>
+  </div>
+  <div id="sendPickerBody" class="sp-body"></div>
+  <div class="sp-footer">
+    <button id="btnCancelSendPicker" class="btn" style="background:#f0f2f5;color:#1a1a2e;flex:none;">Cancel</button>
+    <button id="btnConfirmSendPicker" class="btn btn-dark" style="flex:none;">Send</button>
+  </div>
+</div>
+
 <div id="overlay" class="overlay"></div>
 
 <div id="panel" class="panel">
@@ -395,8 +461,16 @@
     <div class="discussion-head">Discussion</div>
     <div id="panelComments"></div>
     <div id="panelCommentInput" class="comment-input-wrap" style="display:none;">
+      <div id="sourceTagWrap" class="source-tag-wrap" style="display:none;">
+        <label class="stw-label">Responding as (optional)</label>
+        <input type="text" id="sourceTagInput" placeholder="e.g., Legal, Communications">
+      </div>
       <label class="comment-input-label">Add a note with your decision (optional)</label>
       <textarea id="commentText" placeholder="Describe any requested changes, or add context for your approval..."></textarea>
+    </div>
+    <div id="decidedByWrap" class="decided-by-wrap" style="display:none;">
+      <label>Your name (required to confirm this decision)</label>
+      <input type="text" id="decidedByInput" placeholder="Full name">
     </div>
     <div id="panelActions" class="panel-actions"></div>
   </div>
@@ -472,6 +546,13 @@
     activeCanUndo: false
   };
 
+  // Remembered for the length of this browser session only (URL-delivered
+  // corporate links). Lets someone commenting or deciding on several posts in
+  // one sitting type it once instead of every time, while still being able
+  // to change it if a different person picks up the same link later.
+  var sessionSourceTag = '';
+  var sessionDecidedByName = '';
+
   // ----------------------------------------------------------------
   // Utilities
   // ----------------------------------------------------------------
@@ -488,12 +569,12 @@
   }
 
   var toastTimer = null;
-  function toast(msg) {
+  function toast(msg, type) {
     var t = $('toast');
     t.textContent = msg;
-    t.className = 'toast show';
+    t.className = 'toast show' + (type === 'error' ? ' error' : '');
     clearTimeout(toastTimer);
-    toastTimer = setTimeout(function () { t.className = 'toast'; }, 6000);
+    toastTimer = setTimeout(function () { t.className = 'toast'; }, type === 'error' ? 10000 : 6000);
   }
 
   function fail(err) {
@@ -521,6 +602,21 @@
     return isNaN(d.getTime()) ? null : new Date(d.getFullYear(), d.getMonth(), d.getDate());
   }
 
+  // Earliest scheduled date among posts this client can actually act on right
+  // now. Used once on initial load so the calendar opens on the month with
+  // waiting work instead of always defaulting to today's month, e.g. reviewing
+  // August posts in July (MJ, 2026-07-08).
+  function earliestActionableDate() {
+    var earliest = null;
+    state.posts.forEach(function (p) {
+      if (p.Status !== ACTIONABLE_STATUS) return;
+      var d = parseDateOnly(p.Scheduled_Date);
+      if (!d) return;
+      if (!earliest || d < earliest) earliest = d;
+    });
+    return earliest;
+  }
+
   function ymd(d) {
     return d.getFullYear() + '-' +
       ('0' + (d.getMonth() + 1)).slice(-2) + '-' +
@@ -536,14 +632,40 @@
 
   function classifyMedia(url) {
     var u = String(url || '').trim();
-    if (!u) return { type: 'none', url: '' };
+    if (!u) return { type: 'none', url: '', thumbUrl: '' };
     var lower = u.toLowerCase();
-    if (lower.indexOf('box.com/shared/static/') !== -1) return { type: 'image', url: u };
-    if (lower.indexOf('box.com') !== -1) return { type: 'box', url: u };
-    if (lower.indexOf('canva.com') !== -1) return { type: 'canva', url: u };
+    if (lower.indexOf('box.com/shared/static/') !== -1) return { type: 'image', url: u, thumbUrl: u };
+    // Box shared links (/s/TOKEN) use the same token as the direct-static link.
+    var boxShareMatch = u.match(/\/s\/([a-zA-Z0-9]+)/);
+    if (lower.indexOf('box.com/s/') !== -1 && boxShareMatch) {
+      var boxDirectUrl = u.replace(/\/s\/([a-zA-Z0-9]+).*/, '/shared/static/' + boxShareMatch[1]);
+      return { type: 'image', url: boxDirectUrl, thumbUrl: boxDirectUrl };
+    }
+    if (lower.indexOf('box.com') !== -1) return { type: 'box', url: u, thumbUrl: u };
+    // Google Drive — works for both images and videos (e.g. Reels). We don't
+    // know the file type from the URL alone, so: the card/tooltip thumbnail
+    // always uses Drive's thumbnail endpoint (it generates a poster frame for
+    // video files, same as it does for images). The full detail-panel view
+    // uses Drive's /preview endpoint instead of the thumbnail — that endpoint
+    // is Google's own iframe-embeddable viewer and renders a working video
+    // player for video files, a normal image view for images, with no need
+    // to detect which one it is. Type 'drive' (not 'image') tells the panel
+    // renderer to embed an iframe instead of an <img> (MJ, 2026-07-08).
+    if (lower.indexOf('drive.google.com') !== -1) {
+      var driveMatch = u.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || u.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+      if (driveMatch) {
+        return {
+          type: 'drive',
+          url: 'https://drive.google.com/file/d/' + driveMatch[1] + '/preview',
+          thumbUrl: 'https://drive.google.com/thumbnail?id=' + driveMatch[1] + '&sz=w400'
+        };
+      }
+      return { type: 'link', url: u, thumbUrl: u };
+    }
+    if (lower.indexOf('canva.com') !== -1) return { type: 'canva', url: u, thumbUrl: u };
     if (/\.(png|jpg|jpeg|gif|webp)(\?.*)?$/.test(lower) ||
-        lower.indexOf('s3.amazonaws.com') !== -1) return { type: 'image', url: u };
-    return { type: 'link', url: u };
+        lower.indexOf('s3.amazonaws.com') !== -1) return { type: 'image', url: u, thumbUrl: u };
+    return { type: 'link', url: u, thumbUrl: u };
   }
 
   function getPrimaryMediaUrl(p) {
@@ -649,8 +771,10 @@
     }).join('');
     var label = STATUS_LABELS[p.Status] || p.Status.replace(/_/g, ' ');
     var thumb;
-    if (media.type === 'image') {
-      thumb = '<img class="pc-thumb" src="' + esc(media.url) + '" alt="" onerror="this.style.display=\'none\'">';
+    if (media.type === 'image' || media.type === 'drive') {
+      // 'drive' still uses the plain thumbnail image here (poster frame for
+      // video files) — the card is too small for an embedded player.
+      thumb = '<img class="pc-thumb" src="' + esc(media.thumbUrl || media.url) + '" alt="" onerror="this.style.display=\'none\'">';
     } else if (primaryUrl) {
       var linkLabel = media.type === 'box' ? '&#128230; Open in Box &#8599;' : '&#128279; View media &#8599;';
       thumb = '<a class="pc-media-link" href="' + esc(primaryUrl) + '" target="_blank" rel="noopener noreferrer">' + linkLabel + '</a>';
@@ -740,6 +864,20 @@
     commentWrap.style.display = isActionable ? 'block' : 'none';
     if (isActionable) { $('commentText').value = ''; }
 
+    // Optional source tag (corporate, URL-delivered links only) — carries over
+    // within this browser session so it isn't re-typed on every post.
+    var showSourceTag = isActionable && IS_CORPORATE && VIA_URL_DELIVERY;
+    $('sourceTagWrap').style.display = showSourceTag ? 'block' : 'none';
+    if (showSourceTag) { $('sourceTagInput').value = sessionSourceTag; }
+
+    // Required decided-by name (corporate, URL-delivered links only) — this is
+    // the actual accountability field for who made the call, separate from the
+    // casual source tag above. Pre-filled from this session's last entry for
+    // convenience when the same person is deciding on several posts in a row.
+    var showDecidedBy = isActionable && IS_CORPORATE && VIA_URL_DELIVERY;
+    $('decidedByWrap').style.display = showDecidedBy ? 'block' : 'none';
+    if (showDecidedBy) { $('decidedByInput').value = sessionDecidedByName; }
+
     // Action area.
     renderPanelActions(p, isActionable, isRevising, isReadyForCorp, isAwaitingCorp, canUndo);
   }
@@ -763,8 +901,15 @@
         var num = (idx + 1) + '. ';
         if (media.type === 'image') {
           html += '<div>' + num + '</div>' +
-            '<img class="media-img" src="' + esc(url) + '" alt="Image ' + (idx + 1) + '" ' +
+            '<img class="media-img" src="' + esc(media.url) + '" alt="Image ' + (idx + 1) + '" ' +
             'onerror="this.style.display=\'none\'">';
+        } else if (media.type === 'drive') {
+          // Google's own iframe-embeddable viewer — plays video with full
+          // controls, and displays images normally, without us needing to
+          // know which one it is ahead of time.
+          html += '<div>' + num + '</div>' +
+            '<iframe class="media-drive-frame" src="' + esc(media.url) + '" ' +
+            'allow="autoplay" frameborder="0" allowfullscreen></iframe>';
         } else if (media.type === 'box') {
           html += '<div>' + num +
             '<a class="media-link" href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' +
@@ -784,7 +929,10 @@
     if (!html && p.Media_URL) {
       var media = classifyMedia(p.Media_URL);
       if (media.type === 'image') {
-        html = '<img class="media-img" src="' + esc(p.Media_URL) + '" alt="Media">';
+        html = '<img class="media-img" src="' + esc(media.url) + '" alt="Media" onerror="this.style.display=\'none\'">';
+      } else if (media.type === 'drive') {
+        html = '<iframe class="media-drive-frame" src="' + esc(media.url) + '" ' +
+          'allow="autoplay" frameborder="0" allowfullscreen></iframe>';
       } else if (media.url) {
         html = '<a class="media-link" href="' + esc(media.url) + '" target="_blank" rel="noopener noreferrer">' +
           '&#128279; View media &#8599;</a>';
@@ -868,14 +1016,37 @@
       if (commentEl) commentEl.focus();
       return;
     }
+    // URL-delivered corporate links require a self-reported name on the actual
+    // decision — this is the accountability record for who said go, separate
+    // from the optional casual source tag below (which just labels the note).
+    var decidedByName = '';
+    var requireDecidedBy = IS_CORPORATE && VIA_URL_DELIVERY;
+    if (requireDecidedBy) {
+      var decidedByEl = $('decidedByInput');
+      decidedByName = decidedByEl ? decidedByEl.value.trim() : '';
+      if (!decidedByName) {
+        toast('Please enter your name to confirm this decision.');
+        if (decidedByEl) decidedByEl.focus();
+        return;
+      }
+    }
+    // Optional casual source tag on the note itself (comments are submitted as
+    // part of this decision, there's no separate "just comment" action here).
+    var sourceTag = '';
+    if (IS_CORPORATE && VIA_URL_DELIVERY) {
+      var tagEl = $('sourceTagInput');
+      sourceTag = tagEl ? tagEl.value.trim() : '';
+    }
     var btnA = $('btnApprove');
     var btnC = $('btnChanges');
     if (btnA) { btnA.disabled = true; }
     if (btnC) { btnC.disabled = true; }
     showSpinner(true);
     var postTitle = p.Title;
-    run('api_clientSubmitDecision', TOKEN, p.ID, decision, comment)
+    run('api_clientSubmitDecision', TOKEN, p.ID, decision, comment, decidedByName, sourceTag)
       .then(function (res) {
+        if (requireDecidedBy) { sessionDecidedByName = decidedByName; }
+        if (sourceTag) { sessionSourceTag = sourceTag; }
         showSpinner(false);
         if (!res.ok) {
           if (btnA) { btnA.disabled = false; }
@@ -938,6 +1109,10 @@
   // ----------------------------------------------------------------
   // Comment submission
   // ----------------------------------------------------------------
+  // Note: not currently wired to any button. Corporate/local comments are
+  // submitted as the optional note attached to an Approve/Request Changes
+  // decision (see submitDecision), not as a standalone action in this portal.
+  // Left in place in case a standalone "just comment" action gets added later.
   function addComment() {
     var p = state.activePost;
     if (!p) return;
@@ -980,14 +1155,26 @@
   // ----------------------------------------------------------------
   // Local portal: batch Send to Corporate toolbar badge
   // ----------------------------------------------------------------
+  // Combined count of everything ready to go out: posts ready for corporate
+  // review plus Changes_Requested notices still owed to agency. Both ride the
+  // same alert-and-send-anytime pattern (MJ, 2026-07-07).
+  var localPendingCounts = { awaitingCorpCount: 0, pendingChangesCount: 0 };
+
   function loadLocalPendingBatch() {
     if (IS_CORPORATE) return; // Corporate portal has no send badge
-    run('api_localGetPendingCorpCount', TOKEN).then(function (res) {
-      var count = (res && typeof res.awaitingCorpCount === 'number') ? res.awaitingCorpCount : 0;
+    Promise.all([
+      run('api_localGetPendingCorpCount', TOKEN),
+      run('api_localGetPendingChangesCount', TOKEN)
+    ]).then(function (results) {
+      var awaitingCorpCount = (results[0] && typeof results[0].awaitingCorpCount === 'number') ? results[0].awaitingCorpCount : 0;
+      var pendingChangesCount = (results[1] && typeof results[1].pendingChangesCount === 'number') ? results[1].pendingChangesCount : 0;
+      localPendingCounts = { awaitingCorpCount: awaitingCorpCount, pendingChangesCount: pendingChangesCount };
+      var total = awaitingCorpCount + pendingChangesCount;
+
       var badge = $('badgeAwaitingCorp');
       var btn   = $('btnSendToCorp');
-      if (count > 0) {
-        badge.textContent = '⚠️ ' + count + ' ready — send to Corporate!';
+      if (total > 0) {
+        badge.textContent = '⚠️ ' + total + ' ready to send';
         badge.style.display = 'inline-block';
         btn.style.display   = 'inline-block';
       } else {
@@ -999,17 +1186,114 @@
     });
   }
 
-  function localSendToCorporate() {
-    if (!confirm('Send all approved posts to corporate review now?\n\nCorporate will receive a review request email. Agency will also be notified.')) return;
+  // ----------------------------------------------------------------
+  // Send to Corporate picker — choose recipients and delivery channel
+  // (email and/or a copyable portal link) instead of blasting everyone.
+  // If nothing's pending for corporate but Changes_Requested notices are
+  // waiting, there's nothing to pick, so send those directly instead of
+  // opening an empty picker.
+  // ----------------------------------------------------------------
+  var sendPickerApprovers = [];
+
+  function openSendToCorporatePicker() {
+    if (localPendingCounts.awaitingCorpCount === 0 && localPendingCounts.pendingChangesCount > 0) {
+      sendToCorporateDirect([]);
+      return;
+    }
+    $('sendPickerTitle').textContent = 'Send to Corporate';
+    $('sendPickerBody').innerHTML = '<div class="sp-empty">Loading…</div>';
+    $('btnConfirmSendPicker').textContent = 'Send';
+    $('btnConfirmSendPicker').onclick = confirmSendToCorporate;
+    $('sendPickerOverlay').className = 'overlay open';
+    $('sendPickerModal').className = 'send-picker-modal open';
+
+    run('api_clientGetCorporateApprovers', TOKEN).then(function (approvers) {
+      sendPickerApprovers = approvers || [];
+      renderSendToCorporatePicker();
+    }).catch(function (err) {
+      $('sendPickerBody').innerHTML = '<div class="sp-empty">Could not load recipients.</div>';
+      console.error('openSendToCorporatePicker failed:', err && err.message ? err.message : String(err));
+    });
+  }
+
+  function closeSendPicker() {
+    $('sendPickerOverlay').className = 'overlay';
+    $('sendPickerModal').className = 'send-picker-modal';
+  }
+
+  function renderSendToCorporatePicker() {
+    if (!sendPickerApprovers.length) {
+      $('sendPickerBody').innerHTML = '<div class="sp-empty">Nothing pending to send.</div>';
+      return;
+    }
+    var html = '<div class="sp-hint">Choose who gets this batch, and whether by email, a copyable portal link, or both.</div>';
+    sendPickerApprovers.forEach(function (ap, i) {
+      var def = ap.DefaultChannel || 'Email';
+      var emailChecked = def !== 'URL';
+      var urlChecked = def === 'URL' || def === 'Both';
+      html += '<div class="sp-row" data-idx="' + i + '">' +
+        '<label style="display:flex;align-items:center;gap:8px;flex:1;">' +
+        '<input type="checkbox" class="sp-include" checked> ' +
+        '<span class="sp-name">' + esc(ap.Name) + '</span></label>' +
+        '<div class="sp-channels">' +
+        '<label><input type="checkbox" class="sp-email" ' + (emailChecked ? 'checked' : '') + '> Email</label>' +
+        '<label><input type="checkbox" class="sp-url" ' + (urlChecked ? 'checked' : '') + '> URL</label>' +
+        '</div></div>';
+    });
+    $('sendPickerBody').innerHTML = html;
+  }
+
+  function confirmSendToCorporate() {
+    var rows = document.querySelectorAll('#sendPickerBody .sp-row');
+    var selections = [];
+    rows.forEach(function (row) {
+      var idx = parseInt(row.getAttribute('data-idx'), 10);
+      var ap = sendPickerApprovers[idx];
+      if (!row.querySelector('.sp-include').checked) return;
+      var viaEmail = row.querySelector('.sp-email').checked;
+      var viaUrl = row.querySelector('.sp-url').checked;
+      if (!viaEmail && !viaUrl) return;
+      selections.push({ Email: ap.Email, ViaEmail: viaEmail, ViaUrl: viaUrl });
+    });
+    // Only require a selection when there was actually something to pick from.
+    // If corporate approvers exist but none were selected, that's a mistake to
+    // catch. If there was nothing pending for corporate to begin with, an
+    // empty selection is fine, it just means this send is only flushing
+    // pending Changes_Requested notices.
+    if (!selections.length && sendPickerApprovers.length) {
+      toast('Select at least one recipient and channel.', 'error');
+      return;
+    }
+    sendToCorporateDirect(selections);
+  }
+
+  function sendToCorporateDirect(selections) {
     showSpinner(true);
-    run('api_localSendToCorporate', TOKEN).then(function (res) {
+    run('api_localSendToCorporate', TOKEN, selections).then(function (res) {
       showSpinner(false);
-      var sent = (res && typeof res.sent === 'number') ? res.sent : 0;
-      if (sent > 0) {
-        showAllCaughtUp('badgeAwaitingCorp', 'btnSendToCorp');
-        toast(sent + ' post' + (sent !== 1 ? 's' : '') + ' sent to corporate review. Agency has been notified.');
+      var sent   = (res && typeof res.sent   === 'number') ? res.sent   : 0;
+      var errors = (res && typeof res.errors === 'number') ? res.errors : 0;
+      var links  = (res && res.links) || [];
+      var changesNotified = (res && typeof res.changesNotified === 'number') ? res.changesNotified : 0;
+      if (links.length) {
+        showLinkResults(links);
       } else {
-        toast('No posts to send at this time.');
+        closeSendPicker();
+      }
+      var totalProcessed = sent + links.length + changesNotified;
+      if (errors > 0 && sent === 0) {
+        toast('Send failed — notifications could not be delivered.\nPlease try again or contact Anthology FINN Partners.', 'error');
+      } else if (errors > 0) {
+        showAllCaughtUp('badgeAwaitingCorp', 'btnSendToCorp');
+        toast(sent + ' post' + (sent !== 1 ? 's' : '') + ' sent to corporate review, but some notifications may not have been delivered.', 'error');
+      } else if (totalProcessed > 0) {
+        showAllCaughtUp('badgeAwaitingCorp', 'btnSendToCorp');
+        var parts = [];
+        if (sent || links.length) parts.push((sent + links.length) + ' to corporate review');
+        if (changesNotified) parts.push(changesNotified + ' change request' + (changesNotified !== 1 ? 's' : '') + ' to agency');
+        toast('Sent: ' + parts.join(', ') + '.');
+      } else {
+        toast('Nothing to send at this time.');
       }
       loadPosts();
       loadLocalPendingBatch();
@@ -1017,6 +1301,18 @@
       showSpinner(false);
       fail(err);
     });
+  }
+
+  function showLinkResults(links) {
+    var html = '<div class="sp-hint">Copy each link and paste it into the corporate communications platform yourself, the app can’t deliver these automatically.</div>';
+    links.forEach(function (l) {
+      html += '<div class="sp-link-row"><div class="sp-link-name">' + esc(l.Name) + '</div>' +
+        '<input type="text" readonly value="' + esc(l.Url) + '" onclick="this.select();"></div>';
+    });
+    $('sendPickerTitle').textContent = 'Copy these links';
+    $('sendPickerBody').innerHTML = html;
+    $('btnConfirmSendPicker').textContent = 'Done';
+    $('btnConfirmSendPicker').onclick = closeSendPicker;
   }
 
   // ----------------------------------------------------------------
@@ -1061,8 +1357,15 @@
     showSpinner(true);
     run('api_corporateSendBatch', TOKEN).then(function (res) {
       showSpinner(false);
-      var sent = (res && typeof res.sent === 'number') ? res.sent : 0;
-      if (sent > 0) {
+      var sent   = (res && typeof res.sent   === 'number') ? res.sent   : 0;
+      var errors = (res && typeof res.errors === 'number') ? res.errors : 0;
+      if (errors > 0 && sent === 0) {
+        toast('Send failed — notifications could not be delivered.\nPlease try again or contact Anthology FINN Partners.', 'error');
+        loadCorpPendingBatch();
+      } else if (errors > 0) {
+        showAllCaughtUp('badgeCorpResponses', 'btnSendResponses');
+        toast('Decisions sent for ' + sent + ' post' + (sent !== 1 ? 's' : '') + ', but some notifications may not have been delivered.\nVerify the local client received their email.', 'error');
+      } else if (sent > 0) {
         showAllCaughtUp('badgeCorpResponses', 'btnSendResponses');
         toast('Decisions sent for ' + sent + ' post' + (sent !== 1 ? 's' : '') + '. Local client and agency have been notified.');
       } else {
@@ -1093,11 +1396,14 @@
   $('btnClosePanel').addEventListener('click', closePanel);
   $('overlay').addEventListener('click', closePanel);
   if (!IS_CORPORATE) {
-    $('btnSendToCorp').addEventListener('click', localSendToCorporate);
+    $('btnSendToCorp').addEventListener('click', openSendToCorporatePicker);
   }
   if (IS_CORPORATE) {
     $('btnSendResponses').addEventListener('click', corpSendBatch);
   }
+  $('btnCloseSendPicker').addEventListener('click', closeSendPicker);
+  $('btnCancelSendPicker').addEventListener('click', closeSendPicker);
+  $('sendPickerOverlay').addEventListener('click', closeSendPicker);
   $('btnBackToPortal').addEventListener('click', function () {
     $('confirmScreen').className = 'confirm-screen';
   });
@@ -1123,6 +1429,12 @@
   showSpinner(true);
   run('api_clientGetAllPosts', TOKEN).then(function (posts) {
     state.posts = posts || [];
+    // One-time only: open the calendar on whichever month actually has
+    // something waiting for this approver, instead of always today's month.
+    var target = earliestActionableDate();
+    if (target) {
+      state.current = new Date(target.getFullYear(), target.getMonth(), 1);
+    }
     renderCalendar();
     showSpinner(false);
   }).catch(function (err) {

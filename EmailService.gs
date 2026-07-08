@@ -12,22 +12,40 @@
 // ---------------------------------------------------------------------------
 
 /**
- * Sends an email via SendGrid if the API key is set in Script Properties,
- * otherwise falls back to MailApp. Drop-in replacement for MailApp.sendEmail().
+ * Sends an email via the appropriate transport based on recipient domain.
+ *
+ * Routing logic:
+ *   @finnpartners.com recipients → SendGrid
+ *     Proofpoint blocks GAS/MailApp emails arriving at @finnpartners.com,
+ *     so SendGrid (authenticated via anthologysocial@finnpartners.com) is required.
+ *   External recipients (clients) → MailApp
+ *     MailApp has always worked fine for external addresses. SendGrid domain
+ *     verification for finnpartners.com is not required for outbound to external.
+ *
  * @param {{to:string, subject:string, body:string, htmlBody:string, name:string}} options
  * @return {boolean} true if sent successfully
  */
 function sendEmail_(options) {
+  var to = String(options.to || '');
+  var needsSendGrid = to.toLowerCase().indexOf('@finnpartners.com') !== -1;
   var apiKey = PropertiesService.getScriptProperties().getProperty('SENDGRID_API_KEY');
-  if (apiKey) {
+
+  if (needsSendGrid && apiKey) {
     return sendViaSendGrid_(options, apiKey);
   }
-  // Fallback: MailApp (may be blocked by Proofpoint for @finnpartners.com recipients)
+
+  // External addresses (client portals): use MailApp directly.
   try {
     MailApp.sendEmail(options);
+    console.log('MailApp sent → ' + to);
     return true;
   } catch (e) {
-    console.error('MailApp fallback failed: ' + e.message);
+    console.error('MailApp failed for ' + to + ': ' + e.message);
+    // Last resort: try SendGrid even for external addresses.
+    if (apiKey) {
+      console.log('Falling back to SendGrid for ' + to);
+      return sendViaSendGrid_(options, apiKey);
+    }
     return false;
   }
 }
@@ -108,15 +126,34 @@ function testSendGrid() {
  */
 function classifyMediaUrl(url) {
   var u = String(url || '').trim();
-  if (!u) return { type: 'none', url: '' };
+  if (!u) return { type: 'none', url: '', thumbUrl: '' };
   var lower = u.toLowerCase();
-  if (lower.indexOf('box.com') !== -1) return { type: 'box', url: u };
-  if (lower.indexOf('canva.com') !== -1) return { type: 'canva', url: u };
+  if (lower.indexOf('box.com/shared/static/') !== -1) return { type: 'image', url: u, thumbUrl: u };
+  // Box shared links (/s/TOKEN) use the same token as the direct-static link.
+  var boxShareMatch = u.match(/\/s\/([a-zA-Z0-9]+)/);
+  if (lower.indexOf('box.com/s/') !== -1 && boxShareMatch) {
+    var boxDirectUrl = u.replace(/\/s\/([a-zA-Z0-9]+).*/, '/shared/static/' + boxShareMatch[1]);
+    return { type: 'image', url: boxDirectUrl, thumbUrl: boxDirectUrl };
+  }
+  if (lower.indexOf('box.com') !== -1) return { type: 'box', url: u, thumbUrl: u };
+  // Google Drive — convert share link to a direct-serving image URL.
+  if (lower.indexOf('drive.google.com') !== -1) {
+    var driveMatch = u.match(/\/file\/d\/([a-zA-Z0-9_-]+)/) || u.match(/[?&]id=([a-zA-Z0-9_-]+)/);
+    if (driveMatch) {
+      return {
+        type: 'image',
+        url: 'https://drive.google.com/thumbnail?id=' + driveMatch[1] + '&sz=w1600',
+        thumbUrl: 'https://drive.google.com/thumbnail?id=' + driveMatch[1] + '&sz=w400'
+      };
+    }
+    return { type: 'link', url: u, thumbUrl: u };
+  }
+  if (lower.indexOf('canva.com') !== -1) return { type: 'canva', url: u, thumbUrl: u };
   if (/\.(png|jpg|jpeg|gif|webp)(\?.*)?$/.test(lower) ||
       lower.indexOf('s3.amazonaws.com') !== -1) {
-    return { type: 'image', url: u };
+    return { type: 'image', url: u, thumbUrl: u };
   }
-  return { type: 'link', url: u };
+  return { type: 'link', url: u, thumbUrl: u };
 }
 
 /**
@@ -129,7 +166,7 @@ function buildMediaEmailHtml_(mediaUrl) {
   switch (media.type) {
     case 'image':
       return '<div style="margin:16px 0;">' +
-        '<img src="' + escapeHtmlAttr_(media.url) + '" alt="Post image" ' +
+        '<img src="' + escapeHtmlAttr_(media.thumbUrl || media.url) + '" alt="Post image" ' +
         'style="max-width:100%;border-radius:8px;border:1px solid #e0e0e0;" />' +
         '</div>';
     case 'box':
@@ -177,7 +214,7 @@ function buildAllMediaEmailHtml_(post) {
       var media = classifyMediaUrl(url);
       var num = (idx + 1) + '. ';
       if (media.type === 'image') {
-        html += '<div style="margin:6px 0;">' + num + '<img src="' + escapeHtmlAttr_(url) + '" alt="Image ' + (idx + 1) + '" style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid #e0e0e0;" /></div>';
+        html += '<div style="margin:6px 0;">' + num + '<img src="' + escapeHtmlAttr_(media.thumbUrl || media.url) + '" alt="Image ' + (idx + 1) + '" style="max-width:100%;max-height:280px;border-radius:6px;border:1px solid #e0e0e0;" /></div>';
       } else if (media.type === 'box') {
         html += '<div style="margin:6px 0;">' + num + '<a href="' + escapeHtmlAttr_(url) + '" style="color:#1a73e8;font-weight:600;">View media (Box link)</a></div>';
       } else if (media.type === 'canva') {
@@ -851,6 +888,102 @@ function sendAgencyCorpSentFYIEmail(posts, localApproverName) {
     console.log('sendAgencyCorpSentFYIEmail: sent to ' + recipients.join(', '));
   } catch (err) {
     console.error('sendAgencyCorpSentFYIEmail failed: ' + err.message);
+  }
+}
+
+/**
+ * Notifies agency of a batch of Changes_Requested decisions from the local
+ * client, one consolidated digest instead of one email per post. Sent when
+ * local clicks Send to Corporate (piggybacking on that click, per MJ
+ * 2026-07-07) or on its own if there's nothing pending for corporate.
+ * @param {Array<{post: Object, notes: string}>} items
+ * @param {string} localApproverName - display name of the local approver
+ */
+function sendAgencyLocalChangesFYIEmail(items, localApproverName) {
+  var recipients = CONFIG.AGENCY_NOTIFICATION_EMAILS;
+  if (!recipients || !recipients.length || !items || !items.length) return;
+  var count = items.length;
+  var subject = '[IES-TEXA] Local requested changes on ' + count +
+    ' post' + (count !== 1 ? 's' : '');
+
+  var itemsHtml = '';
+  items.forEach(function (item, idx) {
+    var post = item.post;
+    var scheduled = post.Scheduled_Date
+      ? formatDateValue(post.Scheduled_Date, 'EEEE, MMMM d, yyyy')
+      : 'Not scheduled';
+    var notesHtml = item.notes
+      ? '<div style="font-size:13px;color:#666;margin-top:6px;">&ldquo;' +
+        textToHtml_(item.notes) + '&rdquo;</div>'
+      : '';
+    itemsHtml +=
+      '<div style="border:1px solid #e0e0e0;border-radius:6px;padding:14px;' +
+      'margin-bottom:10px;background:#fff;">' +
+      '<div style="font-size:15px;font-weight:700;color:#1a1a2e;margin-bottom:4px;">' +
+      (idx + 1) + '. ' + escapeHtml_(post.Title || '(untitled)') + '</div>' +
+      '<div style="font-size:13px;color:#666;">Scheduled: ' + escapeHtml_(scheduled) + '</div>' +
+      notesHtml +
+      '</div>';
+  });
+
+  var agencyPortalUrl = CONFIG.APP_URL;
+
+  var htmlBody =
+    '<div style="margin:0;padding:0;background:#f4f5f7;">' +
+    '<div style="max-width:600px;margin:0 auto;padding:24px;' +
+    'font-family:Arial,Helvetica,sans-serif;color:#1a1a2e;">' +
+    '<div style="background:#ffffff;border-radius:12px;border:1px solid #e0e0e0;overflow:hidden;">' +
+
+    '<div style="background:#1a1a2e;padding:20px 28px;">' +
+    '<div style="color:#ffffff;font-size:18px;font-weight:700;">IES-TEXA</div>' +
+    '<div style="color:#9aa0b4;font-size:12px;margin-top:4px;">Agency Notification</div>' +
+    '</div>' +
+
+    '<div style="padding:28px;">' +
+    '<div style="background:#FF9800;color:#fff;border-radius:8px;' +
+    'padding:14px 20px;font-size:17px;font-weight:700;margin-bottom:20px;">' +
+    escapeHtml_(localApproverName || 'Local approver') + ' requested changes on ' +
+    count + ' post' + (count !== 1 ? 's' : '') + '</div>' +
+
+    '<p style="font-size:15px;line-height:1.6;color:#333;margin:0 0 20px 0;">' +
+    'The following post' + (count !== 1 ? 's need' : ' needs') + ' revisions before ' +
+    'they can go back out for review.</p>' +
+
+    itemsHtml +
+
+    '<div style="text-align:center;margin:24px 0 8px 0;">' +
+    '<a href="' + escapeHtmlAttr_(agencyPortalUrl) + '" ' +
+    'style="display:inline-block;background:#1a1a2e;color:#ffffff;text-decoration:none;' +
+    'font-size:15px;font-weight:700;padding:12px 28px;border-radius:8px;">' +
+    'Open agency portal &rarr;</a>' +
+    '</div>' +
+    '</div>' +
+
+    '<div style="background:#f8f9fb;border-top:1px solid #e8eaef;padding:14px 28px;' +
+    'font-size:12px;color:#888;">' +
+    'Sent by Anthology FINN Partners &bull; IES-TEXA Social Media Approval Tool' +
+    '</div>' +
+    '</div></div></div>';
+
+  var plainBody = (localApproverName || 'Local approver') + ' requested changes on ' +
+    count + ' post' + (count !== 1 ? 's' : '') + '.\n\n';
+  items.forEach(function (item, i) {
+    plainBody += (i + 1) + '. ' + (item.post.Title || '(untitled)') +
+      (item.notes ? ' — "' + item.notes + '"' : '') + '\n';
+  });
+  plainBody += '\nOpen agency portal: ' + agencyPortalUrl + '\n\nAnthology FINN Partners';
+
+  try {
+    sendEmail_({
+      to: recipients.join(','),
+      subject: subject,
+      body: plainBody,
+      htmlBody: htmlBody,
+      name: 'Anthology FINN Partners'
+    });
+    console.log('sendAgencyLocalChangesFYIEmail: sent to ' + recipients.join(', '));
+  } catch (err) {
+    console.error('sendAgencyLocalChangesFYIEmail failed: ' + err.message);
   }
 }
 

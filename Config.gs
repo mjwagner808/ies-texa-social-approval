@@ -81,7 +81,24 @@ const CONFIG = {
     Clients: 'CLT',
     Users: 'USR'
   },
-  PLATFORMS: ['LinkedIn', 'Facebook', 'Instagram']
+  PLATFORMS: ['LinkedIn', 'Facebook', 'Instagram'],
+  // Delivery channels for corporate notifications. A given send can use one or both.
+  DELIVERY_CHANNELS: {
+    EMAIL: 'Email',
+    URL: 'URL',
+    BOTH: 'Both'
+  },
+  // Query param appended to a corporate approver's portal link when it is being
+  // hand-delivered through their communications platform instead of emailed.
+  // ClientPortal.html checks this to decide whether to show the optional source
+  // tag (on comments) and the required decided-by name (on approve/request changes).
+  URL_DELIVERY_PARAM: 'via',
+  URL_DELIVERY_VALUE: 'link',
+  // Placeholder examples shown in the optional "Responding as" source tag field.
+  SOURCE_TAG_EXAMPLES: 'e.g., Legal, Communications',
+  // Days of no corporate send activity before the agency toolbar shows a
+  // "nothing sent to corporate in a while" indicator.
+  CORP_SEND_STALENESS_DAYS: 3
 };
 
 /**

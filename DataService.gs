@@ -338,9 +338,13 @@ function dsCreatePendingApproval(postId, stage, approverEmail, approverName) {
  * @param {string} approverName
  * @param {string} decision - Approved or Changes_Requested
  * @param {string} notes
+ * @param {string} [decidedByName] - self-reported name of whoever actually clicked the
+ *   decision button. Required by the front end when the session arrived via a
+ *   URL-delivered corporate link (Approver_Email reflects whose link it was, this
+ *   field records who says they actually made the call). Blank on email-delivered decisions.
  * @return {Object} the decision record
  */
-function dsRecordDecision(postId, stage, approverEmail, approverName, decision, notes) {
+function dsRecordDecision(postId, stage, approverEmail, approverName, decision, notes, decidedByName) {
   return withLock_(function () {
     var now = new Date();
     var data = readSheet_(CONFIG.SHEETS.APPROVALS);
@@ -359,11 +363,13 @@ function dsRecordDecision(postId, stage, approverEmail, approverName, decision, 
       updateRowById_(CONFIG.SHEETS.APPROVALS, pendingRow.ID, {
         Approval_Status: decision,
         Decision_Date: now,
-        Decision_Notes: notes || ''
+        Decision_Notes: notes || '',
+        Decided_By_Name: decidedByName || ''
       });
       pendingRow.Approval_Status = decision;
       pendingRow.Decision_Date = now;
       pendingRow.Decision_Notes = notes || '';
+      pendingRow.Decided_By_Name = decidedByName || '';
       return serializeRow_(pendingRow);
     }
     var id = generateId_(CONFIG.SHEETS.APPROVALS);
@@ -376,6 +382,7 @@ function dsRecordDecision(postId, stage, approverEmail, approverName, decision, 
       Approval_Status: decision,
       Decision_Date: now,
       Decision_Notes: notes || '',
+      Decided_By_Name: decidedByName || '',
       Email_Sent_Date: '',
       Created_Date: now
     };
@@ -405,29 +412,90 @@ function dsMarkApprovalEmailSent(postId, stage, approverEmail) {
 }
 
 /**
- * True if every approval record for the post at this stage is Approved
- * (and there is at least one record).
+ * True once at least one CURRENTLY ACTIVE approver's latest record for the
+ * post at this stage is Approved. Neither stage requires unanimous sign-off —
+ * confirmed by MJ 2026-07-07: nothing goes to corporate until the local client
+ * approves, and once any one corporate approver marks a post Approved, it's
+ * approved, full stop, regardless of who else exists at that tier or whether
+ * they've weighed in. Who specifically approved is tracked separately (see
+ * Approver_Name / Decision_Date on each record, shown in the agency post
+ * detail panel) for audit purposes, it just isn't a gate on advancement.
+ * Ignores records from approvers who are no longer Active, so a stale record
+ * from someone removed or deactivated can never block a post. Incident:
+ * 2026-07-07, a removed local client's leftover Pending record blocked every
+ * post indefinitely under the old unanimous-approval rule.
  * @param {string} postId
  * @param {string} stage
  * @return {boolean}
  */
-function dsAllApprovedAtStage(postId, stage) {
+function dsStageApproved(postId, stage) {
   var data = readSheet_(CONFIG.SHEETS.APPROVALS);
   var records = data.rows.filter(function (r) {
     return String(r.Post_ID) === String(postId) && String(r.Stage) === stage;
   });
   if (records.length === 0) return false;
-  // Consider only the latest record per approver.
+
+  var accessLevel = stage === CONFIG.STAGES.CORPORATE ? CONFIG.ACCESS_LEVELS.CORPORATE
+    : (stage === CONFIG.STAGES.LOCAL_CLIENT ? CONFIG.ACCESS_LEVELS.LOCAL : null);
+  var activeEmails = null;
+  if (accessLevel) {
+    activeEmails = {};
+    dsGetAuthorizedClients(accessLevel).forEach(function (ap) {
+      activeEmails[String(ap.Email).toLowerCase()] = true;
+    });
+  }
+
+  // Latest record per approver, active approvers only.
   var latestByApprover = {};
   records.forEach(function (r) {
-    latestByApprover[String(r.Approver_Email).toLowerCase()] = r;
+    var email = String(r.Approver_Email).toLowerCase();
+    if (activeEmails && !activeEmails[email]) return;
+    latestByApprover[email] = r;
   });
+
   for (var email in latestByApprover) {
-    if (String(latestByApprover[email].Approval_Status) !== CONFIG.APPROVAL_STATUSES.APPROVED) {
-      return false;
+    if (String(latestByApprover[email].Approval_Status) === CONFIG.APPROVAL_STATUSES.APPROVED) {
+      return true;
     }
   }
-  return true;
+  return false;
+}
+
+/**
+ * Returns the latest Local_Client-stage Changes_Requested approval records
+ * that haven't yet had an agency notification sent (Email_Sent_Date blank).
+ * Backs the local portal's "ready to send" badge and the digest content when
+ * that batch gets flushed. Per MJ 2026-07-07: Changes_Requested rides the
+ * same batch-and-alert pattern as everything else, no immediate email, but
+ * the reviewer can still hit send at any time, even for just one post.
+ * @return {Array<Object>} raw Post_Approvals rows (ID, Post_ID, Decision_Notes, Approver_Name, ...)
+ */
+function dsGetPendingLocalChangeRequests() {
+  var data = readSheet_(CONFIG.SHEETS.APPROVALS);
+  var latestByPost = {};
+  data.rows.forEach(function (r) {
+    if (String(r.Stage) !== CONFIG.STAGES.LOCAL_CLIENT) return;
+    latestByPost[String(r.Post_ID)] = r; // sheet order is chronological — last one wins
+  });
+  var out = [];
+  Object.keys(latestByPost).forEach(function (pid) {
+    var r = latestByPost[pid];
+    if (String(r.Approval_Status) === CONFIG.APPROVAL_STATUSES.CHANGES_REQUESTED && !r.Email_Sent_Date) {
+      out.push(serializeRow_(r));
+    }
+  });
+  return out;
+}
+
+/**
+ * Marks Post_Approvals records as notified (Email_Sent_Date set) so they drop
+ * out of dsGetPendingLocalChangeRequests on the next check.
+ * @param {Array<string>} approvalIds
+ */
+function dsMarkChangeRequestsNotified(approvalIds) {
+  (approvalIds || []).forEach(function (id) {
+    updateRowById_(CONFIG.SHEETS.APPROVALS, id, { Email_Sent_Date: new Date() });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -453,9 +521,11 @@ function dsGetCommentsForPost(postId) {
  * @param {string} authorName
  * @param {string} text
  * @param {string} type - Internal or Client_Reply
+ * @param {string} [sourceTag] - optional self-reported source, e.g. "Legal", "Communications".
+ *   Only ever populated when the comment came in through a URL-delivered corporate link.
  * @return {Object} the created comment
  */
-function dsAddComment(postId, authorEmail, authorName, text, type) {
+function dsAddComment(postId, authorEmail, authorName, text, type, sourceTag) {
   return withLock_(function () {
     var id = generateId_(CONFIG.SHEETS.COMMENTS);
     var row = {
@@ -465,6 +535,7 @@ function dsAddComment(postId, authorEmail, authorName, text, type) {
       Author_Name: authorName,
       Comment_Text: text,
       Comment_Type: type,
+      Source_Tag: sourceTag || '',
       Created_Date: new Date()
     };
     appendRow_(CONFIG.SHEETS.COMMENTS, row);
@@ -527,12 +598,18 @@ function dsTouchLastLogin(token) {
 }
 
 /**
- * Returns a name for an authorized client row. The Authorized_Clients sheet
- * has no name column, so derive a friendly name from the email local part.
+ * Returns a name for an authorized client row. Prefers explicit "First Name" /
+ * "Last name" columns when present; otherwise falls back to a friendly name
+ * derived from the email local part (for rows added before those columns existed).
  * @param {Object} clientRow
  * @return {string}
  */
 function dsClientDisplayName(clientRow) {
+  var first = String(clientRow['First Name'] || '').trim();
+  var last  = String(clientRow['Last name'] || '').trim();
+  var explicitName = (first + ' ' + last).trim();
+  if (explicitName) return explicitName;
+
   var email = String(clientRow.Email || '');
   var local = email.split('@')[0] || email;
   return local.split(/[._-]/).map(function (part) {
@@ -574,6 +651,24 @@ function dsQueueNotification(postId, approverEmail, approverName, stage, sendAt,
 }
 
 /**
+ * Returns the oldest Created_Date among unsent 'batch' Corporate-stage
+ * notifications, or null if none are pending. Used to power the agency
+ * "nothing sent to corporate in a while" indicator.
+ * @return {Date|null}
+ */
+function dsGetOldestUnsentCorporateBatchDate() {
+  var oldest = null;
+  dsGetUnsentNotifications().forEach(function (r) {
+    if (String(r.Send_At).toLowerCase() !== 'batch') return;
+    if (String(r.Stage) !== CONFIG.STAGES.CORPORATE) return;
+    var created = r.Created_Date instanceof Date ? r.Created_Date : new Date(r.Created_Date);
+    if (isNaN(created.getTime())) return;
+    if (!oldest || created < oldest) oldest = created;
+  });
+  return oldest;
+}
+
+/**
  * Returns all unsent notification rows (raw, with _rowIndex preserved via ID).
  * @return {Array<Object>}
  */
@@ -608,11 +703,14 @@ function dsClearUnsentBatchNotifications(postId, stage) {
 /**
  * Marks a notification row as sent.
  * @param {string} notificationId
+ * @param {string} [deliveryChannel] - CONFIG.DELIVERY_CHANNELS value. Defaults to Email
+ *   so existing call sites that don't pass one keep behaving exactly as before.
  */
-function dsMarkNotificationSent(notificationId) {
+function dsMarkNotificationSent(notificationId, deliveryChannel) {
   updateRowById_(CONFIG.SHEETS.NOTIFICATION_QUEUE, notificationId, {
     Sent: true,
-    Send_At: new Date()
+    Send_At: new Date(),
+    Delivery_Channel: deliveryChannel || CONFIG.DELIVERY_CHANNELS.EMAIL
   });
 }
 
