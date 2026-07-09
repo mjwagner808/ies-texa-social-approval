@@ -433,9 +433,18 @@ function api_savePost(postData) {
     // If Status was included and differs from current, apply status change here
     // so the agency only needs one Save action.
     if (postData.Status && postData.Status !== savedPost.Status) {
-      savedPost = dsUpdatePostStatus(postData.ID, postData.Status, user.Email);
+      var requestedStatus = postData.Status;
+      var level = statusToAccessLevel(requestedStatus);
+      // Client review statuses (Local_Client_Review, Corporate_Review) never go
+      // live directly from this dropdown — hold the post in the matching
+      // Awaiting_ status until the agency explicitly clicks Send. Previously,
+      // picking Corporate_Review here (or Local_Client_Review) set the visible
+      // status immediately, skipping the Awaiting_Corporate/Awaiting_Local gate
+      // and the explicit Send step entirely — a real "client sees something not
+      // explicitly approved" gap. Fixed 2026-07-09.
+      var actualStatus = level ? (awaitingStatusFor_(requestedStatus) || requestedStatus) : requestedStatus;
+      savedPost = dsUpdatePostStatus(postData.ID, actualStatus, user.Email);
       // For client review stages: create pending approvals + queue batch notification.
-      var level = statusToAccessLevel(postData.Status);
       if (level) {
         var stage = accessLevelToStage(level);
         // Deduplicate: clear any existing unsent batch notifications for this post+stage
@@ -446,7 +455,7 @@ function api_savePost(postData) {
           dsQueueNotification(postData.ID, ap.Email, dsClientDisplayName(ap),
             stage, 'batch', user.Email);
         });
-      } else if (postData.Status === CONFIG.STATUSES.INTERNAL) {
+      } else if (requestedStatus === CONFIG.STATUSES.INTERNAL) {
         dsCreatePendingApproval(postData.ID, CONFIG.STAGES.INTERNAL,
           user.Email, user.Full_Name || user.Email);
       }
@@ -897,7 +906,7 @@ function api_getLocalPendingApprovers() {
  * @return {{sent: number, errors: number}}
  */
 function api_sendBatch(stage, selectedEmails) {
-  requireAgencyUser_();
+  var user = requireAgencyUser_();
   var targetStage = stage || CONFIG.STAGES.LOCAL_CLIENT;
   var selectedSet = null;
   if (selectedEmails && selectedEmails.length) {
@@ -911,6 +920,28 @@ function api_sendBatch(stage, selectedEmails) {
     if (selectedSet && !selectedSet[String(row.Approver_Email).toLowerCase()]) return false;
     return true;
   });
+
+  // Advance Awaiting_Local posts referenced by this batch to Local_Client_Review —
+  // this is the explicit Send action that makes them visible to Local, mirroring
+  // sendCorporateBatch_'s Awaiting_Corporate -> Corporate_Review advance. Without
+  // this step the post never left Awaiting_Local and Local would never see it.
+  // Added 2026-07-09 alongside the Awaiting_Local gate itself.
+  if (targetStage === CONFIG.STAGES.LOCAL_CLIENT) {
+    var advancedLocalIds_ = {};
+    batch.forEach(function (row) {
+      var pid = row.Post_ID;
+      if (advancedLocalIds_[pid]) return;
+      var post = dsGetPostById(pid);
+      if (post && String(post.Status) === CONFIG.STATUSES.AWAITING_LOCAL) {
+        try {
+          dsUpdatePostStatus(pid, CONFIG.STATUSES.LOCAL_CLIENT, user.Email);
+          advancedLocalIds_[pid] = true;
+        } catch (err) {
+          console.error('api_sendBatch: failed to advance ' + pid + ': ' + err.message);
+        }
+      }
+    });
+  }
 
   // Group rows by approver email so each person gets exactly one digest email.
   var byApprover = {};
@@ -1304,7 +1335,18 @@ function api_corporateSendBatch(token) {
 function api_clientGetPost(token, postId) {
   var client = requireClient_(token);
   var post = dsGetPostById(postId);
-  if (!post) throw new Error('Post not found.');
+  // Treat a real-but-not-visible post the same as a nonexistent one — don't
+  // give a client any signal (via a different error message) that a hidden
+  // post ID is valid. Fixed 2026-07-09: this function previously had no
+  // visibility check at all, so any client with a valid token could fetch
+  // full post detail for ANY post ID regardless of status (e.g. a Draft that
+  // was never sent to them), by guessing/reusing a sequential POST-### id.
+  // Decisions were already safely blocked in processClientDecision_ (it checks
+  // post.Status === expectedStatus before recording anything), so this was a
+  // read-only exposure, not an approval-integrity one — but MJ's rule is
+  // clients "cannot see anything we don't explicitly approve," and this let
+  // them see it, just not act on it.
+  if (!post || !isPostVisibleToClient_(post, client)) throw new Error('Post not found.');
   // Both local and corporate clients see the full non-internal discussion thread
   // (Client_Reply + Corporate_Reply). Internal comments stay hidden from all clients.
   var comments = dsGetCommentsForPost(postId).filter(function (c) {
@@ -1313,6 +1355,34 @@ function api_clientGetPost(token, postId) {
   });
   var canUndo = checkCanUndo_(client, post);
   return { post: stripInternalFields_(post), comments: comments, canUndo: canUndo };
+}
+
+/**
+ * Returns whether a client (at their access level) is allowed to see a post
+ * given its current status. Single-post counterpart to the status whitelist
+ * inside api_clientGetAllPosts — kept as a separate, self-contained check
+ * (rather than refactoring the bulk list endpoint) to avoid touching that
+ * already-verified corporate Revising-visibility logic from 2026-06-23.
+ * @param {Object} post
+ * @param {Object} client - Authorized_Clients row
+ * @return {boolean}
+ */
+function isPostVisibleToClient_(post, client) {
+  var isCorp = client.Access_Level === CONFIG.ACCESS_LEVELS.CORPORATE;
+  if (post.Status === CONFIG.STATUSES.REVISING && isCorp) {
+    // Only visible to corporate if they've already submitted a decision at their stage —
+    // same rule as api_clientGetAllPosts, checked directly against this one post's
+    // approval history instead of a precomputed bulk lookup.
+    return dsGetApprovalsForPost(post.ID).some(function (a) {
+      return String(a.Stage) === CONFIG.STAGES.CORPORATE;
+    });
+  }
+  var visible = isCorp
+    ? [CONFIG.STATUSES.CORPORATE, CONFIG.STATUSES.APPROVED, CONFIG.STATUSES.PUBLISHED]
+    : [CONFIG.STATUSES.LOCAL_CLIENT, CONFIG.STATUSES.REVISING,
+       CONFIG.STATUSES.AWAITING_CORPORATE, CONFIG.STATUSES.CORPORATE,
+       CONFIG.STATUSES.APPROVED, CONFIG.STATUSES.PUBLISHED];
+  return visible.indexOf(post.Status) !== -1;
 }
 
 /**
@@ -1471,6 +1541,16 @@ function processNotificationQueue() {
   try {
     var now = new Date();
     var unsent = dsGetUnsentNotifications();
+    // Read Authorized_Clients once and build an email lookup, rather than
+    // re-reading the whole sheet inside the per-row loop below. Previously
+    // this ran once PER unsent notification while holding the global script
+    // lock for the entire trigger run — with several rows queued, that held
+    // up every other user's save/status-change action for the duration.
+    // Fixed 2026-07-09 alongside the "too many simultaneous invocations" bug.
+    var clientsByEmail_ = {};
+    dsGetAuthorizedClients().forEach(function (ap) {
+      clientsByEmail_[String(ap.Email).toLowerCase()] = ap;
+    });
     unsent.forEach(function (row) {
       try {
         var sendAt = row.Send_At;
@@ -1490,12 +1570,7 @@ function processNotificationQueue() {
           return;
         }
         // Find the approver's token.
-        var approver = null;
-        dsGetAuthorizedClients().forEach(function (ap) {
-          if (String(ap.Email).toLowerCase() === String(row.Approver_Email).toLowerCase()) {
-            approver = ap;
-          }
-        });
+        var approver = clientsByEmail_[String(row.Approver_Email).toLowerCase()] || null;
         if (!approver) {
           console.error('Notification ' + row.ID + ': approver not found in Authorized_Clients (' +
             row.Approver_Email + '). Marking sent to avoid retries.');

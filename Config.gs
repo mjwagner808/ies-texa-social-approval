@@ -31,6 +31,7 @@ const CONFIG = {
     DRAFT: 'Draft',
     INTERNAL: 'Internal_Review',        // kept for backward compat; UI uses Draft only
     REVISING: 'Revising',               // agency revising after client change request
+    AWAITING_LOCAL: 'Awaiting_Local',   // agency marked ready for Local; waiting on explicit Send to Local Client
     LOCAL_CLIENT: 'Local_Client_Review',
     AWAITING_CORPORATE: 'Awaiting_Corporate', // local approved; waiting for agency or local to send to corporate
     CORPORATE: 'Corporate_Review',
@@ -41,6 +42,7 @@ const CONFIG = {
     Draft: '#9E9E9E',
     Internal_Review: '#9E9E9E',         // same as Draft (backward compat)
     Revising: '#0D9488',                // teal — clearly distinct from orange (Local) and purple (Corporate)
+    Awaiting_Local: '#CA8A04',          // muted gold — "waiting to go to Local", parallel to Awaiting_Corporate's indigo
     Local_Client_Review: '#FF9800',
     Awaiting_Corporate: '#6366F1',      // indigo — "waiting to go to corporate"
     Corporate_Review: '#9C27B0',
@@ -122,6 +124,23 @@ function accessLevelToStatus(accessLevel) {
   return accessLevel === CONFIG.ACCESS_LEVELS.CORPORATE
     ? CONFIG.STATUSES.CORPORATE
     : CONFIG.STATUSES.LOCAL_CLIENT;
+}
+
+/**
+ * Maps a client-visible review status to its "waiting to be sent" holding
+ * status. A post sits here — invisible to the client — from the moment the
+ * agency marks it ready until someone explicitly clicks Send. Added 2026-07-09
+ * to close a gap where the agency's manual status dropdown could set a post
+ * straight to a client-visible status with no explicit send required (this had
+ * always been true for Corporate_Review picked directly from the dropdown, and
+ * was the same root bug MJ noticed with Local Client Review).
+ * @param {string} reviewStatus - CONFIG.STATUSES.LOCAL_CLIENT or CORPORATE
+ * @return {string|null} the matching Awaiting_ status, or null if not applicable
+ */
+function awaitingStatusFor_(reviewStatus) {
+  if (reviewStatus === CONFIG.STATUSES.LOCAL_CLIENT) return CONFIG.STATUSES.AWAITING_LOCAL;
+  if (reviewStatus === CONFIG.STATUSES.CORPORATE) return CONFIG.STATUSES.AWAITING_CORPORATE;
+  return null;
 }
 
 /**

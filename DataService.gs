@@ -10,22 +10,39 @@
 
 /**
  * Returns the configured spreadsheet.
+ * Cached for the lifetime of this script execution — SpreadsheetApp.openById()
+ * is relatively expensive, and prior to this fix every single sheet access
+ * (there can be a dozen+ in one user action) reopened the spreadsheet from
+ * scratch. That repeated opening, combined with the script-wide lock in
+ * withLock_(), was a major contributor to "Too many simultaneous invocations:
+ * Spreadsheets" errors (2026-07-09). A plain module-level variable is safe
+ * here: each GAS execution gets its own fresh global scope, so there's no
+ * risk of leaking a stale handle across separate invocations.
  * @return {GoogleAppsScript.Spreadsheet.Spreadsheet}
  */
+var _cachedSpreadsheet_ = null;
 function getSpreadsheet_() {
-  return SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  if (!_cachedSpreadsheet_) {
+    _cachedSpreadsheet_ = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  }
+  return _cachedSpreadsheet_;
 }
 
 /**
  * Returns a sheet by name, throwing a clear error if missing.
+ * Cached per name for the lifetime of this script execution (see
+ * getSpreadsheet_ above for why).
  * @param {string} name
  * @return {GoogleAppsScript.Spreadsheet.Sheet}
  */
+var _cachedSheets_ = {};
 function getSheet_(name) {
+  if (_cachedSheets_[name]) return _cachedSheets_[name];
   var sheet = getSpreadsheet_().getSheetByName(name);
   if (!sheet) {
     throw new Error('Sheet not found: ' + name + '. Check the spreadsheet structure.');
   }
+  _cachedSheets_[name] = sheet;
   return sheet;
 }
 

@@ -3,3 +3,8 @@
 
 # macOS
 .DS_Store
+
+# Office lock/temp files (e.g. ~$guide.docx) — shouldn't be tracked
+~$*.docx
+~$*.xlsx
+~$*.pptx

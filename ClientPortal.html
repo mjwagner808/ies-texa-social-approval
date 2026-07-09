@@ -793,9 +793,16 @@
   // ----------------------------------------------------------------
   // Panel open / close
   // ----------------------------------------------------------------
+  // Guards against a second click firing a duplicate api_clientGetPost call
+  // while the first one is still in flight. Same fix as Index.html's
+  // openPost() — 2026-07-09, "too many simultaneous invocations" bug.
+  var postOpening = false;
   function openPost(postId) {
+    if (postOpening) return;
+    postOpening = true;
     showSpinner(true);
     run('api_clientGetPost', TOKEN, postId).then(function (detail) {
+      postOpening = false;
       showSpinner(false);
       state.activePost = detail.post;
       state.activeComments = detail.comments || [];
@@ -804,7 +811,10 @@
       $('panel').className = 'panel open';
       $('overlay').className = 'overlay open';
       $('panel').querySelector('.panel-scroll').scrollTop = 0;
-    }).catch(fail);
+    }).catch(function (err) {
+      postOpening = false;
+      fail(err);
+    });
   }
 
   function closePanel() {

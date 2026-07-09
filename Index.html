@@ -453,6 +453,7 @@
     'Draft': '#9E9E9E',
     'Internal_Review': '#9E9E9E',
     'Revising': '#0D9488',
+    'Awaiting_Local': '#CA8A04',
     'Local_Client_Review': '#FF9800',
     'Awaiting_Corporate': '#6366F1',
     'Corporate_Review': '#9C27B0',
@@ -465,6 +466,7 @@
     'Draft': 'Draft',
     'Internal_Review': 'Internal Review',
     'Revising': 'Revising',
+    'Awaiting_Local': 'Send to Local',
     'Local_Client_Review': 'Local Client Review',
     'Awaiting_Corporate': 'Send to Corporate',
     'Corporate_Review': 'Corporate Review',
@@ -818,14 +820,26 @@
     // (notification panel removed — batch send via toolbar)
   }
 
+  // Guards against a second click firing a duplicate api_getPostDetail call
+  // while the first one is still in flight. A slow/stuck-feeling click used
+  // to get re-clicked, stacking additional concurrent server calls on top of
+  // the original one — a contributor to "too many simultaneous invocations"
+  // errors (2026-07-09), same family of bug as the isRefreshing guard above.
+  var postOpening = false;
   function openPost(postId) {
+    if (postOpening) return;
+    postOpening = true;
     showSpinner(true);
     run('api_getPostDetail', postId).then(function (detail) {
+      postOpening = false;
       showSpinner(false);
       state.activePost = detail.post;
       fillPanel(detail.post, detail.approvals, detail.comments);
       openPanel();
-    }).catch(fail);
+    }).catch(function (err) {
+      postOpening = false;
+      fail(err);
+    });
   }
 
   function openNewPost() {
@@ -950,10 +964,13 @@
       updateStatusBadge(post.Status);
       var msg = 'Post saved.';
       // Refresh batch badge whenever status changes to a send-required stage.
-      var batchStatuses = ['Local_Client_Review', 'Awaiting_Corporate', 'Corporate_Review'];
+      // Picking Local_Client_Review or Corporate_Review from the dropdown now
+      // actually saves as Awaiting_Local / Awaiting_Corporate (see api_savePost,
+      // 2026-07-09) — the post won't reach the client-visible status until the
+      // matching Send button is clicked, so those are the statuses to check for.
+      var batchStatuses = ['Awaiting_Local', 'Awaiting_Corporate'];
       if (post.Status !== oldStatus && batchStatuses.indexOf(post.Status) !== -1) {
-        var stageLabel = post.Status === 'Awaiting_Corporate' ? 'Corporate'
-          : post.Status === 'Corporate_Review' ? 'Corporate' : 'Local Client';
+        var stageLabel = post.Status === 'Awaiting_Corporate' ? 'Corporate' : 'Local Client';
         msg += ' Use "Send to ' + stageLabel + '" in the toolbar to notify approvers.';
       }
       // Auto-save any comments the user typed but didn't explicitly submit.
