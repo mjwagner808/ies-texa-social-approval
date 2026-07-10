@@ -1658,3 +1658,242 @@ function renderMessagePage_(title, message, success) {
     .setTitle(title)
     .addMetaTag('viewport', 'width=device-width, initial-scale=1');
 }
+
+// ---------------------------------------------------------------------------
+// Word (.docx) calendar export
+// ---------------------------------------------------------------------------
+
+/**
+ * Builds a Word document (.docx) listing every post scheduled within a date
+ * range — date, title, body copy, and media (embedded images, plus every
+ * link so a video is still reachable even though it can't be embedded/played
+ * in Word). No Status filtering: MJ's call (2026-07-09) is that this export
+ * is a manual, agency-triggered action covered by the existing
+ * human-review-before-external-send rule, not the automatic client-visible
+ * gating added elsewhere this week — so it's on whoever runs the export to
+ * remove anything not appropriate for the recipient before handing it off.
+ * Status/Platform labels were printed per-post as a visual aid for that
+ * review pass but were removed on 2026-07-10 (MJ's formatting pass) — the
+ * safeguard is now purely procedural, not visible in the document itself.
+ * @param {string} startDateStr - 'yyyy-MM-dd' (from an <input type="date">)
+ * @param {string} endDateStr - 'yyyy-MM-dd'
+ * @return {{filename: string, base64: string}}
+ */
+function api_exportCalendarToDocx(startDateStr, endDateStr) {
+  requireAgencyUser_();
+
+  var start = parseCalendarDate_(startDateStr);
+  var end = parseCalendarDate_(endDateStr);
+  if (!start || !end) throw new Error('Choose a valid start and end date.');
+  if (start > end) throw new Error('Start date must be on or before the end date.');
+
+  var posts = dsGetAllPosts()
+    .filter(function (p) {
+      var d = parseCalendarDate_(p.Scheduled_Date);
+      return d && d >= start && d <= end;
+    })
+    .sort(function (a, b) {
+      return parseCalendarDate_(a.Scheduled_Date) - parseCalendarDate_(b.Scheduled_Date);
+    });
+
+  var rangeLabel = formatCalendarDate_(start) + ' to ' + formatCalendarDate_(end);
+  var doc = DocumentApp.create('IES-TEXA Calendar Export ' + rangeLabel + ' (temp)');
+  var docId = doc.getId();
+
+  try {
+    buildCalendarDocBody_(doc, posts, rangeLabel);
+    doc.saveAndClose();
+    var docxBlob = exportGoogleDocAsDocx_(docId);
+    return {
+      filename: 'IES-TEXA Calendar ' + rangeLabel + '.docx',
+      base64: Utilities.base64Encode(docxBlob.getBytes())
+    };
+  } finally {
+    // Only the downloaded .docx is meant to persist — clean up the
+    // intermediate Google Doc whether the export succeeded or failed.
+    try { DriveApp.getFileById(docId).setTrashed(true); } catch (cleanupErr) { /* best effort */ }
+  }
+}
+
+/**
+ * Fills in the body of the temp Google Doc used for the export.
+ * @param {GoogleAppsScript.Document.Document} doc
+ * @param {Array<Object>} posts - serialized post rows, already sorted
+ * @param {string} rangeLabel
+ */
+function buildCalendarDocBody_(doc, posts, rangeLabel) {
+  var body = doc.getBody();
+  body.setMarginTop(40).setMarginBottom(40).setMarginLeft(56).setMarginRight(56);
+
+  // Title lives in the repeating page header, not the body — matches MJ's
+  // manually reformatted reference copy (IES-TEXA Calendar Aug 2026.docx).
+  var header = doc.addHeader();
+  var headerPar = header.appendParagraph('IES-TEXA Social Media Calendar');
+  headerPar.setAlignment(DocumentApp.HorizontalAlignment.CENTER);
+  var headerText = headerPar.editAsText();
+  headerText.setFontSize(10);
+  headerText.setBold(true);
+
+  // Body starts directly with the first post — no title/date-range/disclaimer
+  // paragraphs, to keep this from running long (MJ's call, 2026-07-10).
+  if (!posts.length) {
+    var emptyText = body.getParagraphs()[0].editAsText();
+    emptyText.setFontSize(10);
+    emptyText.setText('No posts are scheduled in this date range.');
+    return;
+  }
+
+  posts.forEach(function (post, idx) {
+    var dateHeading;
+    if (idx === 0) {
+      // Reuse the doc's default first paragraph so nothing precedes it.
+      dateHeading = body.getParagraphs()[0];
+    } else {
+      body.appendHorizontalRule();
+      dateHeading = body.appendParagraph('');
+    }
+    dateHeading.setHeading(DocumentApp.ParagraphHeading.HEADING2);
+    var dateText = dateHeading.editAsText();
+    dateText.setFontSize(10);
+    dateText.setText(formatCalendarDate_(parseCalendarDate_(post.Scheduled_Date)));
+
+    var titleHeading = body.appendParagraph('');
+    titleHeading.setHeading(DocumentApp.ParagraphHeading.HEADING3);
+    var titleText = titleHeading.editAsText();
+    titleText.setFontSize(10);
+    titleText.setText(post.Title || '(untitled)');
+
+    if (post.Post_Copy) {
+      body.appendParagraph(post.Post_Copy).editAsText().setFontSize(10);
+    } else {
+      var noCopy = body.appendParagraph('(no post copy)').editAsText();
+      noCopy.setFontSize(10);
+      noCopy.setForegroundColor('#999999');
+    }
+
+    appendPostMediaToDoc_(body, post);
+  });
+}
+
+/**
+ * Appends every media asset attached to a post to the doc: embeds an image
+ * where the URL classifies as one (sized to a fixed 2.25" tall, width scaled
+ * to match, per MJ's page-count trim on 2026-07-10 — was 2.5"), and always
+ * prints the bare link too (so a video, which can't be embedded/played in
+ * Word, is still reachable — no instructional wording, just the link itself,
+ * per MJ's edit). Field list mirrors buildAllMediaEmailHtml_ in
+ * EmailService.gs, with the same Media_URL legacy fallback.
+ * @param {GoogleAppsScript.Document.Body} body
+ * @param {Object} post
+ */
+function appendPostMediaToDoc_(body, post) {
+  var fields = ['LinkedIn_URL', 'Facebook_URL', 'Instagram_URL', 'Carousel_URLs'];
+  var seen = {};
+  var any = false;
+
+  fields.forEach(function (field) {
+    var val = String(post[field] || '').trim();
+    if (!val) return;
+    var urls = val.split('\n')
+      .map(function (u) { return u.trim(); })
+      .filter(function (u) { return u && !seen[u]; });
+    urls.forEach(function (u) {
+      seen[u] = true;
+      any = true;
+      appendOneMediaAsset_(body, u);
+    });
+  });
+
+  if (!any) {
+    var legacy = String(post.Media_URL || '').trim();
+    if (legacy) {
+      any = true;
+      appendOneMediaAsset_(body, legacy);
+    }
+  }
+
+  if (!any) {
+    var noMedia = body.appendParagraph('No media attached.').editAsText();
+    noMedia.setFontSize(10);
+    noMedia.setForegroundColor('#999999');
+  }
+}
+
+/**
+ * Reuses the existing classifyMediaUrl() (EmailService.gs) so Box/Drive/Canva
+ * handling stays identical to what the notification emails already do.
+ * @param {GoogleAppsScript.Document.Body} body
+ * @param {string} url
+ */
+function appendOneMediaAsset_(body, url) {
+  var media = classifyMediaUrl(url);
+  if (media.type === 'image') {
+    try {
+      var resp = UrlFetchApp.fetch(media.thumbUrl || media.url, { muteHttpExceptions: true });
+      if (resp.getResponseCode() === 200) {
+        var img = body.appendImage(resp.getBlob());
+        var originalHeight = img.getHeight();
+        var originalWidth = img.getWidth();
+        if (originalHeight > 0) {
+          var targetHeightPt = 2.25 * 72; // MJ: 2.25" tall, width can scale freely
+          var ratio = targetHeightPt / originalHeight;
+          img.setHeight(Math.round(targetHeightPt));
+          img.setWidth(Math.round(originalWidth * ratio));
+        }
+      }
+    } catch (err) {
+      // Fetch failed (e.g. sharing permissions) — the link line below still gets added.
+    }
+  }
+  appendLinkLine_(body, url);
+}
+
+function appendLinkLine_(body, url) {
+  var para = body.appendParagraph(url);
+  var text = para.editAsText();
+  text.setFontSize(10);
+  text.setLinkUrl(0, url.length - 1, url);
+}
+
+/**
+ * Parses a 'yyyy-MM-dd' (optionally with a time component) string, or a
+ * Date, into a Date built from literal calendar components — avoids the
+ * UTC-midnight timezone shift already documented in this project (session
+ * log 2026-06-16: new Date('2026-06-01') lands a day early in Hawaiʻi).
+ * @param {string|Date} value
+ * @return {Date|null}
+ */
+function parseCalendarDate_(value) {
+  if (value instanceof Date) {
+    return new Date(value.getFullYear(), value.getMonth(), value.getDate());
+  }
+  var s = String(value || '').trim();
+  var m = s.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (!m) return null;
+  return new Date(parseInt(m[1], 10), parseInt(m[2], 10) - 1, parseInt(m[3], 10));
+}
+
+function formatCalendarDate_(date) {
+  var months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  return months[date.getMonth()] + ' ' + date.getDate() + ', ' + date.getFullYear();
+}
+
+/**
+ * Converts the just-created Google Doc into real .docx bytes via the Docs
+ * export endpoint. Deliberately avoids the Advanced Drive Service (no extra
+ * enablement step for MJ) — DocumentApp/DriveApp usage already causes GAS to
+ * request an OAuth token with enough scope for this endpoint to accept it.
+ * @param {string} fileId
+ * @return {GoogleAppsScript.Base.Blob}
+ */
+function exportGoogleDocAsDocx_(fileId) {
+  var url = 'https://docs.google.com/document/d/' + fileId + '/export?format=docx';
+  var resp = UrlFetchApp.fetch(url, {
+    headers: { Authorization: 'Bearer ' + ScriptApp.getOAuthToken() },
+    muteHttpExceptions: true
+  });
+  if (resp.getResponseCode() !== 200) {
+    throw new Error('Could not convert the export to Word format (HTTP ' + resp.getResponseCode() + '). Try again, or check Drive permissions.');
+  }
+  return resp.getBlob().setName('export.docx');
+}

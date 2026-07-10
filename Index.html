@@ -284,6 +284,7 @@
   <div id="monthLabel"></div>
   <button id="btnNext" title="Next month">&#8594;</button>
   <button id="btnToday">Today</button>
+  <button id="btnExportWord" title="Export a date range to a Word document">Export to Word</button>
   <span id="badgeLocal" style="display:none;background:#FF9800;color:#fff;font-size:12px;font-weight:700;padding:5px 12px;border-radius:20px;margin-right:4px;animation:pulse 1.5s infinite;"></span>
   <button id="btnSendLocal" class="btn small primary" style="display:none;background:#FF9800;border-color:#FF9800;margin-right:10px;">Send to Local Client</button>
   <span id="badgeCorp" style="display:none;background:#6366F1;color:#fff;font-size:12px;font-weight:700;padding:5px 12px;border-radius:20px;margin-right:4px;animation:pulse 1.5s infinite;"></span>
@@ -327,6 +328,29 @@
   <div class="panel-footer">
     <button class="btn" id="btnCancelSendPicker">Cancel</button>
     <button class="btn primary" id="btnConfirmSendPicker">Send</button>
+  </div>
+</div>
+
+<div class="overlay" id="exportOverlay"></div>
+<div class="send-picker-modal" id="exportModal">
+  <div class="panel-header">
+    <h2>Export to Word</h2>
+    <button class="btn small" id="btnCloseExport">&#10005; Close</button>
+  </div>
+  <div class="panel-body">
+    <div class="sp-hint">Builds a Word document listing every post scheduled in this range: date, title, status, body copy, and media. All statuses are included, not just Approved — review the document before sharing it outside the agency.</div>
+    <div class="field">
+      <label for="exportStart">Start date</label>
+      <input type="date" id="exportStart">
+    </div>
+    <div class="field">
+      <label for="exportEnd">End date</label>
+      <input type="date" id="exportEnd">
+    </div>
+  </div>
+  <div class="panel-footer">
+    <button class="btn" id="btnCancelExport">Cancel</button>
+    <button class="btn primary" id="btnConfirmExport">Export</button>
   </div>
 </div>
 
@@ -1087,6 +1111,64 @@
     $('sendPickerModal').className = 'send-picker-modal';
   }
 
+  // ------------------------------------------------------------------
+  // Export to Word
+  // ------------------------------------------------------------------
+  function pad2_(n) { return (n < 10 ? '0' : '') + n; }
+  function toDateInputValue_(d) {
+    return d.getFullYear() + '-' + pad2_(d.getMonth() + 1) + '-' + pad2_(d.getDate());
+  }
+
+  function openExportModal() {
+    var y = state.current.getFullYear();
+    var m = state.current.getMonth();
+    var first = new Date(y, m, 1);
+    var last = new Date(y, m + 1, 0);
+    $('exportStart').value = toDateInputValue_(first);
+    $('exportEnd').value = toDateInputValue_(last);
+    $('exportOverlay').className = 'overlay open';
+    $('exportModal').className = 'send-picker-modal open';
+  }
+
+  function closeExportModal() {
+    $('exportOverlay').className = 'overlay';
+    $('exportModal').className = 'send-picker-modal';
+  }
+
+  function downloadBase64File_(base64, filename, mimeType) {
+    var byteChars = atob(base64);
+    var byteNumbers = new Array(byteChars.length);
+    for (var i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+    var blob = new Blob([new Uint8Array(byteNumbers)], { type: mimeType });
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(link.href); }, 4000);
+  }
+
+  function confirmExportModal() {
+    var start = $('exportStart').value;
+    var end = $('exportEnd').value;
+    if (!start || !end) { toast('Choose a start and end date.', 'error'); return; }
+    if (start > end) { toast('Start date must be on or before the end date.', 'error'); return; }
+    $('btnConfirmExport').disabled = true;
+    showSpinner(true);
+    run('api_exportCalendarToDocx', start, end).then(function (res) {
+      showSpinner(false);
+      $('btnConfirmExport').disabled = false;
+      downloadBase64File_(res.base64, res.filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      toast('Word document downloaded.');
+      closeExportModal();
+    }).catch(function (err) {
+      showSpinner(false);
+      $('btnConfirmExport').disabled = false;
+      fail(err);
+    });
+  }
+
   function renderSendPicker() {
     var kind = sendPickerState.kind;
     var approvers = sendPickerState.approvers;
@@ -1264,6 +1346,11 @@
   $('btnCloseSendPicker').addEventListener('click', closeSendPicker);
   $('btnCancelSendPicker').addEventListener('click', closeSendPicker);
   $('sendPickerOverlay').addEventListener('click', closeSendPicker);
+  $('btnExportWord').addEventListener('click', openExportModal);
+  $('btnCloseExport').addEventListener('click', closeExportModal);
+  $('btnCancelExport').addEventListener('click', closeExportModal);
+  $('exportOverlay').addEventListener('click', closeExportModal);
+  $('btnConfirmExport').addEventListener('click', confirmExportModal);
   $('btnAddInternal').addEventListener('click', function () {
     addComment('newInternalComment', 'Internal');
   });
