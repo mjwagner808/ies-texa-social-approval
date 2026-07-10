@@ -1673,7 +1673,7 @@ function renderMessagePage_(title, message, success) {
  * gating added elsewhere this week — so it's on whoever runs the export to
  * remove anything not appropriate for the recipient before handing it off.
  * Status/Platform labels were printed per-post as a visual aid for that
- * review pass but were removed on 2026-07-10 (MJ's formatting pass) — the
+ * review pass but were removed on 2026-07-09 (MJ's formatting pass) — the
  * safeguard is now purely procedural, not visible in the document itself.
  * @param {string} startDateStr - 'yyyy-MM-dd' (from an <input type="date">)
  * @param {string} endDateStr - 'yyyy-MM-dd'
@@ -1735,7 +1735,7 @@ function buildCalendarDocBody_(doc, posts, rangeLabel) {
   headerText.setBold(true);
 
   // Body starts directly with the first post — no title/date-range/disclaimer
-  // paragraphs, to keep this from running long (MJ's call, 2026-07-10).
+  // paragraphs, to keep this from running long (MJ's call, 2026-07-09).
   if (!posts.length) {
     var emptyText = body.getParagraphs()[0].editAsText();
     emptyText.setFontSize(10);
@@ -1778,7 +1778,7 @@ function buildCalendarDocBody_(doc, posts, rangeLabel) {
 /**
  * Appends every media asset attached to a post to the doc: embeds an image
  * where the URL classifies as one (sized to a fixed 2.25" tall, width scaled
- * to match, per MJ's page-count trim on 2026-07-10 — was 2.5"), and always
+ * to match, per MJ's page-count trim on 2026-07-09 — was 2.5"), and always
  * prints the bare link too (so a video, which can't be embedded/played in
  * Word, is still reachable — no instructional wording, just the link itself,
  * per MJ's edit). Field list mirrors buildAllMediaEmailHtml_ in
