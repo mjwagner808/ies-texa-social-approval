@@ -121,6 +121,17 @@
       background: #4CAF50; color: #fff; border: none;
     }
     .post-card .pc-publish-btn:hover { background: #388E3C; }
+    .post-card .pc-unpublish-btn, .post-card .pc-delete-btn {
+      display: inline-block; margin-top: 5px; margin-right: 5px; padding: 3px 8px;
+      font-size: 10px; font-weight: 700; cursor: pointer; border-radius: 4px;
+      border: none; color: #fff;
+    }
+    .post-card .pc-unpublish-btn { background: #8D6E00; }
+    .post-card .pc-unpublish-btn:hover { background: #6b5400; }
+    .post-card .pc-delete-btn { background: #C62828; }
+    .post-card .pc-delete-btn:hover { background: #9c1f1f; }
+    .post-card .pc-restore-btn { background: #2E7D32; }
+    .post-card .pc-restore-btn:hover { background: #205a24; }
     .post-card-done { filter: saturate(0.4); }
     .badge {
       display: inline-block; color: #fff; font-size: 10px; font-weight: 700;
@@ -440,12 +451,26 @@
       </div>
     </div>
 
-    <div class="section-title">Client-visible comments</div>
-    <div id="clientComments"></div>
-    <div style="display:flex;gap:8px;margin-top:8px;">
-      <input type="text" id="newClientComment" placeholder="Reply to client (visible to client)…"
-             style="flex:1;font:inherit;padding:8px 11px;border:1px solid var(--border);border-radius:8px;">
-      <button class="btn small" id="btnAddClientReply">Reply</button>
+    <div class="section-title">Client conversations</div>
+    <div style="margin-bottom:12px;">
+      <div style="font-size:12px;font-weight:600;color:#555;margin-bottom:4px;">Local reviewer conversation</div>
+      <div id="localComments"></div>
+    </div>
+    <div>
+      <div style="font-size:12px;font-weight:600;color:#555;margin-bottom:4px;">Corporate reviewer conversation</div>
+      <div id="corporateComments"></div>
+    </div>
+    <div style="margin-top:10px;">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:6px;font-size:12px;color:#666;">
+        <span>Posting to:</span>
+        <label style="cursor:pointer;"><input type="radio" name="replyScope" value="Client_Reply"> Local</label>
+        <label style="cursor:pointer;"><input type="radio" name="replyScope" value="Corporate_Reply"> Corporate</label>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <input type="text" id="newClientComment" placeholder="Reply to reviewer (visible to that conversation)…"
+               style="flex:1;font:inherit;padding:8px 11px;border:1px solid var(--border);border-radius:8px;">
+        <button class="btn small" id="btnAddClientReply">Reply</button>
+      </div>
     </div>
 
     <div class="section-title">Approval history &amp; change requests</div>
@@ -453,6 +478,9 @@
 
   </div>
   <div class="panel-footer">
+    <button class="btn" id="btnDelete" style="color:#C62828;border-color:#C62828;margin-right:auto;">Delete</button>
+    <button class="btn" id="btnUnpublish" style="color:#8D6E00;border-color:#8D6E00;">Unpublish</button>
+    <button class="btn" id="btnRestore" style="color:#2E7D32;border-color:#2E7D32;margin-right:auto;">Restore</button>
     <button class="btn" id="btnCancel">Cancel</button>
     <button class="btn primary" id="btnSave">Save post</button>
   </div>
@@ -658,6 +686,73 @@
       html += '</div>';
     }
     cal.innerHTML = html;
+  }
+
+  // Hide timer — lets the mouse move from card to tooltip without closing it.
+  var _ttHide = null;
+  function scheduleHide() {
+    _ttHide = setTimeout(function () {
+      $('previewTooltip').style.display = 'none';
+    }, 250);
+  }
+  function cancelHide() { clearTimeout(_ttHide); }
+
+  function showTooltipForCard(card, e) {
+    var pid = card.getAttribute('data-id');
+    var post = null;
+    for (var pi = 0; pi < state.posts.length; pi++) {
+      if (state.posts[pi].ID === pid) { post = state.posts[pi]; break; }
+    }
+    if (!post) return;
+    var url = getPrimaryMediaUrl(post);
+    if (!url) return;
+    cancelHide();
+    var tt = $('previewTooltip');
+    var media = classifyMedia(url);
+    // Title
+    $('ptTitle').textContent = post.Title || '';
+    // Platforms
+    var plats = String(post.Platform || '').split(',').map(function (p) { return p.trim(); }).filter(function (p) { return p; }).join(' · ');
+    if (plats) { $('ptPlatforms').textContent = plats; $('ptPlatforms').style.display = 'block'; }
+    else { $('ptPlatforms').style.display = 'none'; }
+    // Scheduled date
+    var d = parseDateOnly(post.Scheduled_Date);
+    if (d) {
+      var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      $('ptDate').textContent = months[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
+      $('ptDate').style.display = 'block';
+    } else { $('ptDate').style.display = 'none'; }
+    // Media
+    if (media.type === 'image') {
+      $('ptImg').src = media.url;
+      $('ptImg').style.display = 'block';
+      $('ptLink').style.display = 'none';
+      $('ptMeta').textContent = '';
+    } else {
+      $('ptImg').style.display = 'none';
+      $('ptLink').textContent = media.type === 'box' ? '📦 Open in Box ↗' : '🔗 View media ↗';
+      $('ptLink').href = url;
+      $('ptLink').style.display = 'inline-block';
+      $('ptMeta').textContent = url.length > 55 ? url.slice(0, 52) + '…' : url;
+    }
+    tt.style.display = 'block';
+    positionTooltip(tt, e);
+  }
+
+  // Fixed 2026-07-22: all of this used to live INSIDE renderCalendar(), so a
+  // fresh set of listeners got attached to the same calendar/tooltip elements
+  // on every single re-render (every 60s auto-refresh, plus after every save
+  // or decision). Nothing ever removed the old ones, so they piled up for the
+  // life of the page. That was mostly invisible for a plain click (redundant
+  // opens of the same post), but became very visible the moment a delegated
+  // handler started calling a blocking confirm() (Stage 3b's Delete/Unpublish):
+  // one click could fire dozens of stacked handlers, each popping its own
+  // confirm dialog, which looked exactly like "nothing happens no matter how
+  // many times I click OK or Cancel." Wiring this once, here, at page load,
+  // fixes that at the root instead of working around it.
+  function wireCalendarInteractions_() {
+    var cal = $('calendar');
+    var tt = $('previewTooltip');
 
     // Bind card clicks via delegation on the calendar container.
     // Clicks on the media link, tooltip, or publish button should NOT open the post detail panel.
@@ -671,61 +766,29 @@
         markPublished(pid, publishBtn);
         return;
       }
+      // Stage 3b quick-actions.
+      var unpublishBtn = e.target.closest ? e.target.closest('.pc-unpublish-btn') : null;
+      if (unpublishBtn) {
+        e.stopPropagation();
+        setPostRetention(unpublishBtn.getAttribute('data-postid'), 'Unpublished', unpublishBtn);
+        return;
+      }
+      var deleteBtn = e.target.closest ? e.target.closest('.pc-delete-btn') : null;
+      if (deleteBtn) {
+        e.stopPropagation();
+        setPostRetention(deleteBtn.getAttribute('data-postid'), 'Deleted', deleteBtn);
+        return;
+      }
+      var restoreBtn = e.target.closest ? e.target.closest('.pc-restore-btn') : null;
+      if (restoreBtn) {
+        e.stopPropagation();
+        restorePost(restoreBtn.getAttribute('data-postid'), restoreBtn);
+        return;
+      }
       var card = e.target.closest ? e.target.closest('.post-card') : null;
       if (!card) return;
       openPost(card.getAttribute('data-id'));
     });
-
-    // Hide timer — lets the mouse move from card to tooltip without closing it.
-    var _ttHide = null;
-    function scheduleHide() {
-      _ttHide = setTimeout(function () {
-        $('previewTooltip').style.display = 'none';
-      }, 250);
-    }
-    function cancelHide() { clearTimeout(_ttHide); }
-
-    function showTooltipForCard(card, e) {
-      var pid = card.getAttribute('data-id');
-      var post = null;
-      for (var pi = 0; pi < state.posts.length; pi++) {
-        if (state.posts[pi].ID === pid) { post = state.posts[pi]; break; }
-      }
-      if (!post) return;
-      var url = getPrimaryMediaUrl(post);
-      if (!url) return;
-      cancelHide();
-      var tt = $('previewTooltip');
-      var media = classifyMedia(url);
-      // Title
-      $('ptTitle').textContent = post.Title || '';
-      // Platforms
-      var plats = String(post.Platform || '').split(',').map(function (p) { return p.trim(); }).filter(function (p) { return p; }).join(' · ');
-      if (plats) { $('ptPlatforms').textContent = plats; $('ptPlatforms').style.display = 'block'; }
-      else { $('ptPlatforms').style.display = 'none'; }
-      // Scheduled date
-      var d = parseDateOnly(post.Scheduled_Date);
-      if (d) {
-        var months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
-        $('ptDate').textContent = months[d.getMonth()] + ' ' + d.getDate() + ', ' + d.getFullYear();
-        $('ptDate').style.display = 'block';
-      } else { $('ptDate').style.display = 'none'; }
-      // Media
-      if (media.type === 'image') {
-        $('ptImg').src = media.url;
-        $('ptImg').style.display = 'block';
-        $('ptLink').style.display = 'none';
-        $('ptMeta').textContent = '';
-      } else {
-        $('ptImg').style.display = 'none';
-        $('ptLink').textContent = media.type === 'box' ? '📦 Open in Box ↗' : '🔗 View media ↗';
-        $('ptLink').href = url;
-        $('ptLink').style.display = 'inline-block';
-        $('ptMeta').textContent = url.length > 55 ? url.slice(0, 52) + '…' : url;
-      }
-      tt.style.display = 'block';
-      positionTooltip(tt, e);
-    }
 
     // Card hover — use mouseover/mouseout delegation (bubbles, works in GAS sandbox).
     cal.addEventListener('mouseover', function (e) {
@@ -738,7 +801,6 @@
     cal.addEventListener('mousemove', function (e) {
       var card = e.target.closest ? e.target.closest('.post-card') : null;
       if (!card) return;
-      var tt = $('previewTooltip');
       if (tt.style.display === 'block') positionTooltip(tt, e);
     });
     cal.addEventListener('mouseout', function (e) {
@@ -750,7 +812,6 @@
     });
 
     // Keep tooltip open when hovering over it so the link can be clicked.
-    var tt = $('previewTooltip');
     tt.addEventListener('mouseover', function () { cancelHide(); });
     tt.addEventListener('mouseout', function () { scheduleHide(); });
   }
@@ -802,6 +863,27 @@
     var publishBtn = (p.Status === 'Approved')
       ? '<button class="pc-publish-btn" data-postid="' + esc(p.ID) + '" title="Mark as Published">Mark Published &rarr;</button>'
       : '';
+    // Stage 3b: Unpublish quick-action shown on Published cards only; Delete
+    // shown on any card. Both confirm before applying (see event wiring).
+    // Once a post is already flagged, show Restore instead of either — no
+    // confirm needed, restoring isn't a destructive action.
+    var unpublishBtn = (!p.Retention_Status && p.Status === 'Published')
+      ? '<button class="pc-unpublish-btn" data-postid="' + esc(p.ID) + '" title="Mark as Unpublished">Unpublish</button>'
+      : '';
+    var deleteBtn = !p.Retention_Status
+      ? '<button class="pc-delete-btn" data-postid="' + esc(p.ID) + '" title="Delete post">Delete</button>'
+      : '';
+    var restoreBtn = p.Retention_Status
+      ? '<button class="pc-restore-btn" data-postid="' + esc(p.ID) + '" title="Restore post">Restore</button>'
+      : '';
+    // A retention flag mutes the card the same as a done status, regardless
+    // of what Status happens to be — Retention_Status is independent of
+    // Status (see Config.gs). A small badge says which one and since when.
+    var retentionBadge = p.Retention_Status
+      ? '<span class="badge" style="background:#616161;color:#fff;margin-left:6px;">' +
+        esc(p.Retention_Status) + '</span>'
+      : '';
+    isDone = isDone || !!p.Retention_Status;
     // Revising uses bright yellow — needs dark text for readability.
     var badgeTextColor = '#ffffff';   // teal Revising (#0D9488) uses white text
     var cardStyle = 'border-left-color:' + color + ';' + (isDone ? 'opacity:0.55;' : '');
@@ -809,7 +891,7 @@
       '<div class="pc-title">' + esc(p.Title || '(untitled)') + '</div>' +
       '<div class="pc-meta">' +
       '<span class="badge" style="background:' + color + ';color:' + badgeTextColor + ';">' + esc(STATUS_LABELS[p.Status] || p.Status) + '</span>' +
-      icons + '</div>' + thumb + publishBtn + '</div>';
+      retentionBadge + icons + '</div>' + thumb + publishBtn + unpublishBtn + deleteBtn + restoreBtn + '</div>';
   }
 
   // ------------------------------------------------------------------
@@ -900,11 +982,23 @@
     // (notification panel removed — batch send via toolbar)
     renderComments(comments || []);
     renderApprovals(approvals || []);
+    setDefaultReplyScope(post.Status || 'Draft');
 
     // New posts can't comment until saved.
     var saved = !!post.ID;
     $('btnAddInternal').disabled = !saved;
     $('btnAddClientReply').disabled = !saved;
+
+    // Stage 3b: Delete needs a saved post; Unpublish only makes sense once
+    // something is actually Published. Once a post is flagged (Deleted or
+    // Unpublished), show Restore instead of Delete/Unpublish — re-deleting
+    // an already-deleted post isn't a meaningful action. All three stay
+    // hidden rather than merely disabled/grayed, so an unsaved new-post
+    // panel doesn't show any of them.
+    var flagged = saved && !!post.Retention_Status;
+    $('btnDelete').style.display = (saved && !flagged) ? '' : 'none';
+    $('btnUnpublish').style.display = (saved && !flagged && post.Status === 'Published') ? '' : 'none';
+    $('btnRestore').style.display = flagged ? '' : 'none';
   }
 
   function updateStatusBadge(status) {
@@ -915,18 +1009,44 @@
 
   function renderComments(comments) {
     var internalHtml = '';
-    var clientHtml = '';
+    var localHtml = '';
+    var corporateHtml = '';
     comments.forEach(function (c) {
       var item = '<div class="comment ' + (c.Comment_Type === 'Internal' ? 'internal' : '') + '">' +
         '<div class="c-meta">' + esc(c.Author_Name || c.Author_Email) + ' · ' + esc(c.Created_Date) + '</div>' +
         '<div class="c-text">' + esc(c.Comment_Text) + '</div></div>';
       if (c.Comment_Type === 'Internal') internalHtml += item;
-      else clientHtml += item;
+      else if (c.Comment_Type === 'Corporate_Reply') corporateHtml += item;
+      else localHtml += item; // Client_Reply = Local conversation
     });
     $('internalComments').innerHTML = internalHtml ||
       '<div style="color:#998a4d;font-size:12px;">No internal comments yet.</div>';
-    $('clientComments').innerHTML = clientHtml ||
-      '<div style="color:#999;font-size:12px;">No client-visible comments yet.</div>';
+    $('localComments').innerHTML = localHtml ||
+      '<div style="color:#999;font-size:12px;">No local reviewer comments yet.</div>';
+    $('corporateComments').innerHTML = corporateHtml ||
+      '<div style="color:#999;font-size:12px;">No corporate reviewer comments yet.</div>';
+  }
+
+  // Defended default for the agency reply toggle. The reply box points at the
+  // conversation the post's current stage implies, but stays overridable. The
+  // default biases toward Local (the protected lane): a reply is aimed at
+  // Corporate ONLY when the post is clearly in a corporate stage, so an
+  // accidental Enter/click during local work can never file Ali's candid note
+  // into Corporate's view. Posting to Corporate is always a deliberate act.
+  var CORPORATE_STAGE_STATUSES =
+    ['Awaiting_Corporate', 'Corporate_Review', 'Approved', 'Published'];
+  function setDefaultReplyScope(status) {
+    var scope = CORPORATE_STAGE_STATUSES.indexOf(status) !== -1
+      ? 'Corporate_Reply' : 'Client_Reply';
+    var radios = document.querySelectorAll('input[name="replyScope"]');
+    for (var i = 0; i < radios.length; i++) {
+      radios[i].checked = (radios[i].value === scope);
+    }
+  }
+  function getReplyScope() {
+    var checked = document.querySelector('input[name="replyScope"]:checked');
+    // Fall back to Local if somehow nothing is selected — never Corporate.
+    return checked ? checked.value : 'Client_Reply';
   }
 
   function renderApprovals(approvals) {
@@ -1003,7 +1123,7 @@
         commentSaves.push(run('api_addComment', post.ID, pendingInternal, 'Internal'));
       }
       if (pendingClient && post.ID) {
-        commentSaves.push(run('api_addComment', post.ID, pendingClient, 'Client_Reply'));
+        commentSaves.push(run('api_addComment', post.ID, pendingClient, getReplyScope()));
       }
       if (commentSaves.length) {
         return Promise.all(commentSaves).then(function () {
@@ -1298,6 +1418,44 @@
     });
   }
 
+  // Stage 3b (2026-07-22): shared Delete/Unpublish action. Confirms first
+  // (both are agreed to require confirmation), never removes the row —
+  // dsSetRetentionStatus only sets a flag. Used from both the calendar
+  // quick-actions and the panel footer buttons; btn/closeAfter let callers
+  // from either place behave correctly (a panel button should close the
+  // panel after, a calendar button should just disable itself).
+  function setPostRetention(postId, retentionStatus, btn, closeAfter) {
+    var verb = retentionStatus === 'Deleted' ? 'delete' : 'unpublish';
+    if (!confirm('Are you sure you want to ' + verb + ' this post? This cannot be undone from here.')) return;
+    if (btn) btn.disabled = true;
+    showSpinner(true);
+    run('api_setPostRetention', postId, retentionStatus).then(function () {
+      showSpinner(false);
+      toast('Post marked as ' + retentionStatus + '.');
+      if (closeAfter) closePanel();
+      loadPosts().then(loadPendingBatch);
+    }).catch(function (err) {
+      if (btn) btn.disabled = false;
+      fail(err);
+    });
+  }
+
+  // Restore add-on (2026-07-22). No confirm — clearing a flag isn't
+  // destructive, unlike setting one.
+  function restorePost(postId, btn, closeAfter) {
+    if (btn) btn.disabled = true;
+    showSpinner(true);
+    run('api_restorePost', postId).then(function () {
+      showSpinner(false);
+      toast('Post restored.');
+      if (closeAfter) closePanel();
+      loadPosts().then(loadPendingBatch);
+    }).catch(function (err) {
+      if (btn) btn.disabled = false;
+      fail(err);
+    });
+  }
+
   // ------------------------------------------------------------------
   // Comments
   // ------------------------------------------------------------------
@@ -1355,8 +1513,25 @@
     addComment('newInternalComment', 'Internal');
   });
   $('btnAddClientReply').addEventListener('click', function () {
-    addComment('newClientComment', 'Client_Reply');
+    addComment('newClientComment', getReplyScope());
   });
+  $('btnDelete').addEventListener('click', function () {
+    if (!state.activePost || !state.activePost.ID) return;
+    setPostRetention(state.activePost.ID, 'Deleted', $('btnDelete'), true);
+  });
+  $('btnUnpublish').addEventListener('click', function () {
+    if (!state.activePost || !state.activePost.ID) return;
+    setPostRetention(state.activePost.ID, 'Unpublished', $('btnUnpublish'), true);
+  });
+  $('btnRestore').addEventListener('click', function () {
+    if (!state.activePost || !state.activePost.ID) return;
+    restorePost(state.activePost.ID, $('btnRestore'), true);
+  });
+
+  // Wire calendar click/hover delegation exactly once (see the note on
+  // wireCalendarInteractions_ above — this must NOT be called from inside
+  // renderCalendar, which runs on every refresh).
+  wireCalendarInteractions_();
 
   // Initial load (deep-link support via ?post=POST-001).
   loadPosts(state.openPostIdOnLoad || null).then(function () {

@@ -326,6 +326,20 @@ function processClientDecision_(client, postId, decision, notes, decidedByName, 
             dsQueueNotification(postId, ap.Email, dsClientDisplayName(ap),
               CONFIG.STAGES.CORPORATE, 'batch', 'system');
           });
+        } else if (nextStatus === CONFIG.STATUSES.APPROVED) {
+          // Stage 3a (2026-07-22): save a permanent copy of the approved media
+          // to the app's own Drive folder. Wrapped in try/catch — the decision
+          // itself is already recorded at this point (dsUpdatePostStatus above
+          // already succeeded), so a Drive-copy hiccup must never surface to
+          // the reviewer as if their approval failed. post's media fields are
+          // unaffected by the status change above, so the already-fetched
+          // `post` object is still accurate to read from.
+          try {
+            saveApprovedAssetCopies_(post, client.Email);
+          } catch (err) {
+            console.error('processClientDecision_: permanent-copy save failed for ' +
+              postId + ': ' + err.message);
+          }
         }
       }
     }
@@ -486,6 +500,35 @@ function api_changeStatus(postId, newStatus) {
     dsCreatePendingApproval(postId, CONFIG.STAGES.INTERNAL, user.Email, user.Full_Name || user.Email);
   }
   return post;
+}
+
+/**
+ * Sets a post's Deleted/Unpublished retention flag. Stage 3b (2026-07-22).
+ * Agency-only, mirrors the confirm-first pattern the front end wraps this in.
+ * Does not touch Status or remove the row — see dsSetRetentionStatus.
+ * @param {string} postId
+ * @param {string} retentionStatus - CONFIG.RETENTION_STATUSES value
+ * @return {Object} the updated post
+ */
+function api_setPostRetention(postId, retentionStatus) {
+  var user = requireAgencyUser_();
+  var valid = [CONFIG.RETENTION_STATUSES.DELETED, CONFIG.RETENTION_STATUSES.UNPUBLISHED];
+  if (valid.indexOf(retentionStatus) === -1) {
+    throw new Error('Invalid retention status: ' + retentionStatus);
+  }
+  return dsSetRetentionStatus(postId, retentionStatus, user.Email);
+}
+
+/**
+ * Clears a post's Deleted/Unpublished retention flag. Stage 3b add-on
+ * (2026-07-22). The row and its Status were never touched by Delete/Unpublish
+ * in the first place, so restoring is just clearing the flag back to blank.
+ * @param {string} postId
+ * @return {Object} the updated post
+ */
+function api_restorePost(postId) {
+  var user = requireAgencyUser_();
+  return dsSetRetentionStatus(postId, '', user.Email);
 }
 
 /**
@@ -1000,13 +1043,20 @@ function api_sendBatch(stage, selectedEmails) {
  * Adds an agency comment to a post.
  * @param {string} postId
  * @param {string} text
- * @param {string} type - Internal or Client_Reply
+ * @param {string} type - Internal, Client_Reply (the Local conversation), or
+ *   Corporate_Reply (the Corporate conversation). Any other value falls back to
+ *   Internal, so a bad or missing type can never leak text into a client thread.
  * @return {Object} the created comment
  */
 function api_addComment(postId, text, type) {
   var user = requireAgencyUser_();
-  var safeType = (type === CONFIG.COMMENT_TYPES.CLIENT_REPLY)
-    ? CONFIG.COMMENT_TYPES.CLIENT_REPLY
+  // Agency may post into either client conversation (Local or Corporate) or keep
+  // it internal. Stage 1 (2026-07-21) added Corporate_Reply as a valid target so
+  // the agency can reply directly into the Corporate conversation.
+  var clientScopes = [CONFIG.COMMENT_TYPES.CLIENT_REPLY,
+                      CONFIG.COMMENT_TYPES.CORPORATE_REPLY];
+  var safeType = (clientScopes.indexOf(type) !== -1)
+    ? type
     : CONFIG.COMMENT_TYPES.INTERNAL;
   return dsAddComment(postId, user.Email, user.Full_Name || user.Email,
     String(text || '').trim(), safeType);
@@ -1285,7 +1335,10 @@ function api_corporateSendBatch(token) {
       post: post,
       approverName: String(latest.Approver_Name || latest.Approver_Email || 'Corporate'),
       decision: String(latest.Approval_Status),
-      notes: String(latest.Notes || '')
+      // Fixed 2026-07-21: was latest.Notes, but the Post_Approvals column is
+      // actually named Decision_Notes (see dsRecordDecision) — Notes was always
+      // undefined, so a reviewer's comment never appeared in this digest at all.
+      notes: String(latest.Decision_Notes || '')
     });
     decisionsByPost[postId].post = post;
   });
@@ -1347,11 +1400,20 @@ function api_clientGetPost(token, postId) {
   // clients "cannot see anything we don't explicitly approve," and this let
   // them see it, just not act on it.
   if (!post || !isPostVisibleToClient_(post, client)) throw new Error('Post not found.');
-  // Both local and corporate clients see the full non-internal discussion thread
-  // (Client_Reply + Corporate_Reply). Internal comments stay hidden from all clients.
+  // Comment scoping (Stage 1, 2026-07-21) — ASYMMETRIC visibility:
+  //   Corporate reviewer   -> ONLY the Corporate conversation (Corporate_Reply).
+  //                           Never sees the local thread. This protects the local
+  //                           reviewer's candor and is the behavior fixed here.
+  //                           Previously Corporate saw the full non-internal thread.
+  //   Local reviewer (Ali) -> BOTH the Local conversation (Client_Reply) and the
+  //                           Corporate conversation, because she is the liaison to
+  //                           Corporate. Unchanged from prior behavior.
+  //   Internal comments stay hidden from all clients.
+  var isCorp = client.Access_Level === CONFIG.ACCESS_LEVELS.CORPORATE;
   var comments = dsGetCommentsForPost(postId).filter(function (c) {
-    return c.Comment_Type === CONFIG.COMMENT_TYPES.CLIENT_REPLY ||
-           c.Comment_Type === CONFIG.COMMENT_TYPES.CORPORATE_REPLY;
+    if (c.Comment_Type === CONFIG.COMMENT_TYPES.CORPORATE_REPLY) return true;
+    // The local conversation is visible to the local reviewer only.
+    return !isCorp && c.Comment_Type === CONFIG.COMMENT_TYPES.CLIENT_REPLY;
   });
   var canUndo = checkCanUndo_(client, post);
   return { post: stripInternalFields_(post), comments: comments, canUndo: canUndo };

@@ -25,8 +25,15 @@ const CONFIG = {
     NOTIFICATION_QUEUE: 'Notification_Queue',
     AUTHORIZED_CLIENTS: 'Authorized_Clients',
     CLIENTS: 'Clients',
-    USERS: 'Users'
+    USERS: 'Users',
+    POST_VERSIONS: 'Post_Versions',  // Stage 2 (2026-07-21): creative snapshot per submit-to-review
+    POST_FINAL_ASSETS: 'Post_Final_Assets' // Stage 3a (2026-07-22): permanent copy of approved media
   },
+  // Stage 3a (2026-07-22): Drive folder ID for permanent copies of approved
+  // media. Deliberately NOT the corporate "Texaco Social" shared drive — the
+  // whole point is a location whose access corporate can't revoke. Owned by
+  // the account that runs this script.
+  PERMANENT_ASSETS_FOLDER_ID: '1mjSWICMT27-xDHWiALLnOc0reZeeRnbf',
   STATUSES: {
     DRAFT: 'Draft',
     INTERNAL: 'Internal_Review',        // kept for backward compat; UI uses Draft only
@@ -70,6 +77,16 @@ const CONFIG = {
     LOCAL: 'Local',
     CORPORATE: 'Corporate'
   },
+  // Stage 3b (2026-07-22): a Deleted/Unpublished flag on a post, separate
+  // from Status. Deliberately NOT a Status value — Status drives the
+  // approval workflow, the Stage 2 snapshot hook, and the Stage 3a permanent-
+  // copy hook, none of which should need to know about this. This is an
+  // annotation on the record ("marked as Deleted/Unpublished on [date]"),
+  // not a workflow state.
+  RETENTION_STATUSES: {
+    DELETED: 'Deleted',
+    UNPUBLISHED: 'Unpublished'
+  },
   ROLES: {
     ADMIN: 'Admin',
     VIEWER: 'Viewer'
@@ -81,7 +98,9 @@ const CONFIG = {
     Notification_Queue: 'NTF',
     Authorized_Clients: 'AC',
     Clients: 'CLT',
-    Users: 'USR'
+    Users: 'USR',
+    Post_Versions: 'PVR',
+    Post_Final_Assets: 'PFA'
   },
   PLATFORMS: ['LinkedIn', 'Facebook', 'Instagram'],
   // Delivery channels for corporate notifications. A given send can use one or both.

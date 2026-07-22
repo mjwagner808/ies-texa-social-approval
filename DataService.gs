@@ -280,6 +280,28 @@ function dsUpdatePostStatus(postId, status, userEmail) {
     if (validStatuses.indexOf(status) === -1) {
       throw new Error('Invalid status: ' + status);
     }
+    // Stage 2 (2026-07-21): capture a creative snapshot whenever a post is
+    // submitted to a reviewer, i.e. its status is entering a client-visible
+    // review state. This single hook covers every submit-to-review path
+    // (first send to Local, first send to Corporate, and both resubmit-to-
+    // Corporate paths), because all of them route status changes through here.
+    // The snapshot reads the post's CURRENT fields (the creative as submitted),
+    // before the status write below. writePostVersion_ uses only non-locking
+    // primitives, so it is safe to call inside this existing lock — we must NOT
+    // nest a second withLock_ here.
+    if (STAGE_SNAPSHOT_STATUSES_.indexOf(status) !== -1) {
+      var current = dsGetPostById(postId);
+      if (current) {
+        try {
+          writePostVersion_(current, status, userEmail);
+        } catch (err) {
+          // A snapshot failure must never block the actual review submission.
+          // Log and continue so the reviewer still receives the post.
+          console.error('dsUpdatePostStatus: snapshot failed for ' + postId +
+            ' -> ' + status + ': ' + err.message);
+        }
+      }
+    }
     var ok = updateRowById_(CONFIG.SHEETS.POSTS, postId, {
       Status: status,
       Modified_Date: new Date(),
@@ -290,12 +312,227 @@ function dsUpdatePostStatus(postId, status, userEmail) {
   });
 }
 
+// Statuses that count as "submitted to a reviewer" and trigger a snapshot.
+var STAGE_SNAPSHOT_STATUSES_ =
+  [CONFIG.STATUSES.LOCAL_CLIENT, CONFIG.STATUSES.CORPORATE];
+
+/**
+ * Sets or clears a post's retention flag (Deleted/Unpublished). Stage 3b
+ * (2026-07-22). Deliberately does NOT touch Status — see the comment on
+ * CONFIG.RETENTION_STATUSES for why this is a separate annotation, not a
+ * workflow state. Never removes the Posts row itself, per the build spec's
+ * "no holes in the record" rule (Section 7): snapshots, the comment trail,
+ * and any permanent Drive copies already saved for this post are untouched.
+ * @param {string} postId
+ * @param {string} retentionStatus - CONFIG.RETENTION_STATUSES value, or ''
+ *   to clear the flag (e.g. an undo/restore action, not built yet but this
+ *   keeps the door open for one without a schema change).
+ * @param {string} userEmail
+ * @return {Object} the updated post
+ */
+function dsSetRetentionStatus(postId, retentionStatus, userEmail) {
+  var ok = updateRowById_(CONFIG.SHEETS.POSTS, postId, {
+    Retention_Status: retentionStatus || '',
+    Retention_Date: retentionStatus ? new Date() : '',
+    Modified_Date: new Date(),
+    Modified_By: userEmail
+  });
+  if (!ok) throw new Error('Post not found: ' + postId);
+  return dsGetPostById(postId);
+}
+
+/**
+ * Writes one creative-snapshot row to Post_Versions. Stage 2 (2026-07-21).
+ * Stores the post copy and the media LINKS only (no image data), per the build
+ * spec — the Word document renders previews from the links at generation time.
+ * The first snapshot for a post is labeled "Original"; each later one is
+ * "Resubmission N", counted per post.
+ *
+ * IMPORTANT: this helper does NOT acquire the script lock. It is only ever
+ * called from inside dsUpdatePostStatus, which already holds the lock. Do not
+ * call it outside a lock without wrapping it.
+ *
+ * @param {Object} post - the post's current serialized fields (pre-status-change)
+ * @param {string} targetStatus - CONFIG.STATUSES.LOCAL_CLIENT or .CORPORATE
+ * @param {string} userEmail
+ * @return {Object} the created version row (serialized)
+ */
+function writePostVersion_(post, targetStatus, userEmail) {
+  var existing = readSheet_(CONFIG.SHEETS.POST_VERSIONS).rows
+    .filter(function (r) { return String(r.Post_ID) === String(post.ID); });
+  var label = existing.length === 0
+    ? 'Original'
+    : 'Resubmission ' + existing.length;
+  var stage = (targetStatus === CONFIG.STATUSES.CORPORATE)
+    ? CONFIG.STAGES.CORPORATE
+    : CONFIG.STAGES.LOCAL_CLIENT;
+  var row = {
+    ID: generateId_(CONFIG.SHEETS.POST_VERSIONS),
+    Post_ID: post.ID,
+    Version_Label: label,
+    Stage: stage,
+    Post_Copy: post.Post_Copy || '',
+    Platform: post.Platform || '',
+    Media_URL: post.Media_URL || '',
+    LinkedIn_URL: post.LinkedIn_URL || '',
+    Facebook_URL: post.Facebook_URL || '',
+    Instagram_URL: post.Instagram_URL || '',
+    Carousel_URLs: post.Carousel_URLs || '',
+    Created_By: userEmail,
+    Created_Date: new Date()
+  };
+  appendRow_(CONFIG.SHEETS.POST_VERSIONS, row);
+  return serializeRow_(row);
+}
+
+/**
+ * Returns all snapshot rows for a post, oldest first. Stage 2 (2026-07-21).
+ * Consumed by the Stage 4 reviewer Word download; exposed now so the snapshot
+ * data can be inspected/tested before the download UI exists.
+ * @param {string} postId
+ * @return {Array<Object>}
+ */
+function dsGetPostVersions(postId) {
+  return readSheet_(CONFIG.SHEETS.POST_VERSIONS).rows
+    .filter(function (r) { return String(r.Post_ID) === String(postId); })
+    .map(serializeRow_);
+}
+
+// ---------------------------------------------------------------------------
+// Post_Final_Assets — Stage 3a (2026-07-22)
+// ---------------------------------------------------------------------------
+
+/**
+ * Copies a post's approved media into the app's own permanent Drive folder
+ * and logs one row per file to Post_Final_Assets.
+ *
+ * IMPORTANT — deliberately NOT called from inside dsUpdatePostStatus's lock,
+ * unlike the Stage 2 snapshot hook. DriveApp copy calls are network I/O and
+ * can be slow (especially video), and holding the global script lock for
+ * that long would block every other concurrent save/decision across the
+ * whole app. Approved has exactly one call site today
+ * (processClientDecision_ in Code.gs), so this is called directly from
+ * there, right after dsUpdatePostStatus returns and the lock has already
+ * been released. If a second call site for Approved is ever added, it must
+ * call this too — there is no central hook covering it, on purpose.
+ *
+ * A per-file copy failure does NOT throw or abort the batch: that file's
+ * row is still written, with Stored_File_Id/Stored_File_Url left blank, so
+ * the gap is visible directly in the sheet rather than silently lost in the
+ * execution log. This matters because the source media currently lives on
+ * a corporate-controlled Shared Drive — if that access is ever revoked, a
+ * copy can fail at exactly the moment this safety net is supposed to catch
+ * it, and that failure needs to be seen, not swallowed.
+ *
+ * Re-approval (a post reopened, changed, and approved again) simply appends
+ * another round of rows here; nothing in this function overwrites or looks
+ * for a prior copy, so every approved version stays on record.
+ *
+ * @param {Object} post - the post's current serialized fields
+ * @param {string} userEmail - unused today, kept for parity with other
+ *   write helpers and in case a Created_By column is added later
+ */
+function saveApprovedAssetCopies_(post, userEmail) {
+  var folder;
+  try {
+    folder = DriveApp.getFolderById(CONFIG.PERMANENT_ASSETS_FOLDER_ID);
+  } catch (err) {
+    console.error('saveApprovedAssetCopies_: cannot open destination folder ' +
+      CONFIG.PERMANENT_ASSETS_FOLDER_ID + ': ' + err.message);
+    return;
+  }
+
+  // Same field list/order as the Word export and email builders (Media_URL
+  // is the legacy fallback, only used when none of the platform fields have
+  // anything). Carousel_URLs can hold multiple links, one per line.
+  var fields = ['LinkedIn_URL', 'Facebook_URL', 'Instagram_URL', 'Carousel_URLs'];
+  var urlEntries = []; // {field, url}
+  fields.forEach(function (field) {
+    var val = String(post[field] || '').trim();
+    if (!val) return;
+    val.split('\n')
+      .map(function (u) { return u.trim(); })
+      .filter(function (u) { return u; })
+      .forEach(function (u) { urlEntries.push({ field: field, url: u }); });
+  });
+  if (!urlEntries.length) {
+    var legacy = String(post.Media_URL || '').trim();
+    if (legacy) urlEntries.push({ field: 'Media_URL', url: legacy });
+  }
+  if (!urlEntries.length) return; // nothing to copy
+
+  urlEntries.forEach(function (entry) {
+    var row = {
+      ID: generateId_(CONFIG.SHEETS.POST_FINAL_ASSETS),
+      Post_ID: post.ID,
+      Source_Field: entry.field,
+      Original_URL: entry.url,
+      Stored_File_Id: '',
+      Stored_File_Url: '',
+      Created_Date: new Date()
+    };
+    try {
+      var fileId = extractDriveFileId_(entry.url);
+      if (!fileId) throw new Error('Could not parse a Drive file ID from this URL.');
+      var copy = DriveApp.getFileById(fileId).makeCopy(
+        (post.Title || post.ID) + ' — ' + entry.field, folder);
+      row.Stored_File_Id = copy.getId();
+      row.Stored_File_Url = copy.getUrl();
+    } catch (err) {
+      console.error('saveApprovedAssetCopies_: failed to copy ' + entry.url +
+        ' (post ' + post.ID + ', ' + entry.field + '): ' + err.message);
+      // Row is still written below with a blank Stored_File_Id — see the
+      // function-level comment on why this must stay visible, not silent.
+    }
+    appendRow_(CONFIG.SHEETS.POST_FINAL_ASSETS, row);
+  });
+}
+
+/**
+ * Extracts a Google Drive file ID from common share-link shapes:
+ * .../file/d/ID/view, ...?id=ID, or a bare ID pasted directly.
+ * @param {string} url
+ * @return {string|null}
+ */
+/**
+ * One-off helper, not called anywhere else. Stage 3a needs the broader Drive
+ * scope (drive/drive.readonly) to open a folder/file it didn't create itself,
+ * which the app's prior Drive usage (Word export) never required. A deployed
+ * web app can't trigger the interactive consent screen for that new scope —
+ * only running something directly in the editor can. MJ: select this
+ * function in the dropdown next to Run/Debug at the top of the editor, click
+ * Run once, click through the permission prompt, then this can be deleted.
+ */
+function reauthorizeDriveAccess_() {
+  DriveApp.getFolderById(CONFIG.PERMANENT_ASSETS_FOLDER_ID);
+}
+
+function extractDriveFileId_(url) {
+  var m = url.match(/\/file\/d\/([a-zA-Z0-9_-]{15,})/);
+  if (m) return m[1];
+  m = url.match(/[?&]id=([a-zA-Z0-9_-]{15,})/);
+  if (m) return m[1];
+  if (/^[a-zA-Z0-9_-]{15,}$/.test(url.trim())) return url.trim();
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Post_Approvals
 // ---------------------------------------------------------------------------
 
 /**
  * Returns all approval records for a post, newest first.
+ *
+ * "Newest" is determined by Decision_Date (falling back to Created_Date for
+ * still-Pending rows with no decision yet), NOT by physical row position.
+ * Fixed 2026-07-21: this previously just reversed raw sheet order, which
+ * quietly assumed appends always land at the bottom in chronological order.
+ * That assumption breaks the moment a row is manually edited/reused out of
+ * append order (as happened during a manual test-data reset), silently
+ * returning a stale decision as "latest" — e.g. api_corporateSendBatch's
+ * digest email showed an old Changes_Requested round instead of the actual,
+ * current Approved decision. Sorting by an explicit timestamp instead of
+ * trusting row order fixes that class of bug wherever this function is used.
  * @param {string} postId
  * @return {Array<Object>}
  */
@@ -304,7 +541,25 @@ function dsGetApprovalsForPost(postId) {
   return data.rows
     .filter(function (r) { return String(r.Post_ID) === String(postId); })
     .map(serializeRow_)
-    .reverse();
+    .sort(function (a, b) {
+      var aTime = approvalSortTime_(a);
+      var bTime = approvalSortTime_(b);
+      return bTime - aTime; // descending: newest first
+    });
+}
+
+/**
+ * Returns the timestamp to sort an approval record by: its Decision_Date if
+ * decided, otherwise its Created_Date (covers still-Pending rows). Invalid or
+ * missing dates sort as 0 (oldest), never as "newest" by accident.
+ * @param {Object} record
+ * @return {number} epoch millis
+ */
+function approvalSortTime_(record) {
+  var raw = record.Decision_Date || record.Created_Date;
+  if (!raw) return 0;
+  var d = (raw instanceof Date) ? raw : new Date(raw);
+  return isNaN(d.getTime()) ? 0 : d.getTime();
 }
 
 /**
