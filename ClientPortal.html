@@ -422,6 +422,7 @@
   <span id="monthLabel"></span>
   <button id="btnNext">&#8594;</button>
   <button id="btnToday">Today</button>
+  <button id="btnExportWord" title="Download a Word record of posts in a date range">Download Record</button>
   <span id="badgeAwaitingCorp" class="toolbar-batch-badge"></span>
   <button id="btnSendToCorp" class="toolbar-batch-btn">Send to Corporate</button>
   <span id="badgeCorpResponses" class="toolbar-batch-badge" style="background:#9C27B0;"></span>
@@ -443,6 +444,29 @@
   <div class="sp-footer">
     <button id="btnCancelSendPicker" class="btn" style="background:#f0f2f5;color:#1a1a2e;flex:none;">Cancel</button>
     <button id="btnConfirmSendPicker" class="btn btn-dark" style="flex:none;">Send</button>
+  </div>
+</div>
+
+<div id="exportOverlay" class="overlay"></div>
+<div id="exportModal" class="send-picker-modal">
+  <div class="sp-header">
+    <h2>Download Approval Record</h2>
+    <button id="btnCloseExport" class="panel-close">&#10005;</button>
+  </div>
+  <div class="sp-body">
+    <div class="sp-hint">Downloads a Word record of every post shared with you in this date range, including its review, change, and approval history.</div>
+    <div class="field" style="margin-bottom:10px;">
+      <label for="exportStart">Start date</label>
+      <input type="date" id="exportStart" style="width:100%;padding:8px 11px;border:1px solid #ccc;border-radius:8px;font:inherit;">
+    </div>
+    <div class="field">
+      <label for="exportEnd">End date</label>
+      <input type="date" id="exportEnd" style="width:100%;padding:8px 11px;border:1px solid #ccc;border-radius:8px;font:inherit;">
+    </div>
+  </div>
+  <div class="sp-footer">
+    <button id="btnCancelExport" class="btn" style="background:#f0f2f5;color:#1a1a2e;flex:none;">Cancel</button>
+    <button id="btnConfirmExport" class="btn btn-dark" style="flex:none;">Download</button>
   </div>
 </div>
 
@@ -1389,6 +1413,68 @@
   }
 
   // ----------------------------------------------------------------
+  // Download Approval Record (Stage 4, piece 3, 2026-07-23) — mirrors
+  // Index.html's agency "Export to Word" pattern exactly, calling the
+  // token-scoped api_clientExportToDocx instead of the agency's
+  // api_exportCalendarToDocx. Visible to both Local and Corporate, per MJ's
+  // confirmation this should work identically for both roles.
+  // ----------------------------------------------------------------
+  function pad2_(n) { return (n < 10 ? '0' : '') + n; }
+  function toDateInputValue_(d) {
+    return d.getFullYear() + '-' + pad2_(d.getMonth() + 1) + '-' + pad2_(d.getDate());
+  }
+
+  function openExportModal() {
+    var y = state.current.getFullYear();
+    var m = state.current.getMonth();
+    var first = new Date(y, m, 1);
+    var last = new Date(y, m + 1, 0);
+    $('exportStart').value = toDateInputValue_(first);
+    $('exportEnd').value = toDateInputValue_(last);
+    $('exportOverlay').className = 'overlay open';
+    $('exportModal').className = 'send-picker-modal open';
+  }
+
+  function closeExportModal() {
+    $('exportOverlay').className = 'overlay';
+    $('exportModal').className = 'send-picker-modal';
+  }
+
+  function downloadBase64File_(base64, filename, mimeType) {
+    var byteChars = atob(base64);
+    var byteNumbers = new Array(byteChars.length);
+    for (var i = 0; i < byteChars.length; i++) byteNumbers[i] = byteChars.charCodeAt(i);
+    var blob = new Blob([new Uint8Array(byteNumbers)], { type: mimeType });
+    var link = document.createElement('a');
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(function () { URL.revokeObjectURL(link.href); }, 4000);
+  }
+
+  function confirmExportModal() {
+    var start = $('exportStart').value;
+    var end = $('exportEnd').value;
+    if (!start || !end) { toast('Choose a start and end date.', 'error'); return; }
+    if (start > end) { toast('Start date must be on or before the end date.', 'error'); return; }
+    $('btnConfirmExport').disabled = true;
+    showSpinner(true);
+    run('api_clientExportToDocx', TOKEN, start, end).then(function (res) {
+      showSpinner(false);
+      $('btnConfirmExport').disabled = false;
+      downloadBase64File_(res.base64, res.filename, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
+      toast('Word document downloaded.');
+      closeExportModal();
+    }).catch(function (err) {
+      showSpinner(false);
+      $('btnConfirmExport').disabled = false;
+      fail(err);
+    });
+  }
+
+  // ----------------------------------------------------------------
   // Event wiring
   // ----------------------------------------------------------------
   $('btnPrev').addEventListener('click', function () {
@@ -1414,6 +1500,11 @@
   $('btnCloseSendPicker').addEventListener('click', closeSendPicker);
   $('btnCancelSendPicker').addEventListener('click', closeSendPicker);
   $('sendPickerOverlay').addEventListener('click', closeSendPicker);
+  $('btnExportWord').addEventListener('click', openExportModal);
+  $('btnCloseExport').addEventListener('click', closeExportModal);
+  $('btnCancelExport').addEventListener('click', closeExportModal);
+  $('exportOverlay').addEventListener('click', closeExportModal);
+  $('btnConfirmExport').addEventListener('click', confirmExportModal);
   $('btnBackToPortal').addEventListener('click', function () {
     $('confirmScreen').className = 'confirm-screen';
   });

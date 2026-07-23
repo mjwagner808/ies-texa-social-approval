@@ -207,7 +207,7 @@ Open the corporate approver URL in an incognito window to see exactly what she s
 
 **Emails not sending** — Check that you authorized the app in Part 4. In GAS, go to Project Settings → scroll down to see if Gmail permission is listed.
 
-**Changes not saving** — Re-deploy after any code changes (Deploy → Manage deployments → edit → New version → Save).
+**Changes not saving** — Re-deploy after any code changes (Deploy → Manage deployments → edit → New version → Save). See `2026-07-23-deployment-checklist.md` in this folder for the full checklist, added after a save-but-never-deployed gap caused a real privacy leak to sit live for most of a day.
 
 ---
 

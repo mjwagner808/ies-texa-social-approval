@@ -235,7 +235,8 @@ function dsCreatePost(postData, userEmail) {
       Created_Date: now,
       Modified_Date: now,
       Modified_By: userEmail,
-      Internal_Notes: postData.Internal_Notes || ''
+      Internal_Notes: postData.Internal_Notes || '',
+      Is_Test: postData.Is_Test || ''
     };
     appendRow_(CONFIG.SHEETS.POSTS, row);
     return dsGetPostById(id);
@@ -257,7 +258,7 @@ function dsUpdatePost(postId, postData, userEmail) {
     };
     ['Title', 'Post_Copy', 'Platform', 'Media_URL',
      'LinkedIn_URL', 'Facebook_URL', 'Instagram_URL', 'Carousel_URLs',
-     'Scheduled_Date', 'Internal_Notes']
+     'Scheduled_Date', 'Internal_Notes', 'Is_Test']
       .forEach(function (field) {
         if (postData.hasOwnProperty(field)) updates[field] = postData[field];
       });
@@ -394,6 +395,21 @@ function writePostVersion_(post, targetStatus, userEmail) {
  */
 function dsGetPostVersions(postId) {
   return readSheet_(CONFIG.SHEETS.POST_VERSIONS).rows
+    .filter(function (r) { return String(r.Post_ID) === String(postId); })
+    .map(serializeRow_);
+}
+
+/**
+ * Returns all permanent final-asset rows for a post (one row per copied
+ * file, written by saveApprovedAssetCopies_), oldest first. A post approved
+ * more than once (re-approval edge case, Section 6 of the build spec) will
+ * have more than one round of rows here — all are returned, not just the
+ * latest, so the Stage 4 export can decide how to present re-approvals.
+ * @param {string} postId
+ * @return {Array<Object>}
+ */
+function dsGetFinalAssetsForPost(postId) {
+  return readSheet_(CONFIG.SHEETS.POST_FINAL_ASSETS).rows
     .filter(function (r) { return String(r.Post_ID) === String(postId); })
     .map(serializeRow_);
 }

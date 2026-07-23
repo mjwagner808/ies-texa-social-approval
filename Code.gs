@@ -1144,7 +1144,7 @@ function api_clientGetQueue(token) {
   var client = requireClient_(token);
   var status = accessLevelToStatus(client.Access_Level);
   return dsGetAllPosts()
-    .filter(function (p) { return p.Status === status; })
+    .filter(function (p) { return !p.Is_Test && p.Status === status; })
     .map(stripInternalFields_);
 }
 
@@ -1188,6 +1188,9 @@ function api_clientGetAllPosts(token) {
 
   return dsGetAllPosts()
     .filter(function (p) {
+      // Is_Test posts (2026-07-22): agency-only fixture data, never shown to
+      // a real reviewer here — see the matching check in isPostVisibleToClient_.
+      if (p.Is_Test) return false;
       if (p.Status === CONFIG.STATUSES.REVISING && isCorp) {
         // Only show corporate a Revising post if they submitted a decision on it.
         return !!(corpReviewedIds && corpReviewedIds[p.ID]);
@@ -1400,23 +1403,63 @@ function api_clientGetPost(token, postId) {
   // clients "cannot see anything we don't explicitly approve," and this let
   // them see it, just not act on it.
   if (!post || !isPostVisibleToClient_(post, client)) throw new Error('Post not found.');
-  // Comment scoping (Stage 1, 2026-07-21) — ASYMMETRIC visibility:
-  //   Corporate reviewer   -> ONLY the Corporate conversation (Corporate_Reply).
-  //                           Never sees the local thread. This protects the local
-  //                           reviewer's candor and is the behavior fixed here.
-  //                           Previously Corporate saw the full non-internal thread.
-  //   Local reviewer (Ali) -> BOTH the Local conversation (Client_Reply) and the
-  //                           Corporate conversation, because she is the liaison to
-  //                           Corporate. Unchanged from prior behavior.
-  //   Internal comments stay hidden from all clients.
-  var isCorp = client.Access_Level === CONFIG.ACCESS_LEVELS.CORPORATE;
-  var comments = dsGetCommentsForPost(postId).filter(function (c) {
-    if (c.Comment_Type === CONFIG.COMMENT_TYPES.CORPORATE_REPLY) return true;
-    // The local conversation is visible to the local reviewer only.
-    return !isCorp && c.Comment_Type === CONFIG.COMMENT_TYPES.CLIENT_REPLY;
-  });
+  var comments = filterCommentsForRole_(dsGetCommentsForPost(postId), client.Access_Level);
   var canUndo = checkCanUndo_(client, post);
   return { post: stripInternalFields_(post), comments: comments, canUndo: canUndo };
+}
+
+/**
+ * Filters a post's comments down to what a given client access level is
+ * allowed to see. Comment scoping (Stage 1, 2026-07-21) — ASYMMETRIC visibility:
+ *   Corporate reviewer -> ONLY the Corporate conversation (Corporate_Reply).
+ *                         Never sees the local thread. This protects the local
+ *                         reviewer's candor.
+ *   Local reviewer (Ali) -> BOTH the Local conversation (Client_Reply) and the
+ *                         Corporate conversation, because she is the liaison to
+ *                         Corporate.
+ *   Internal comments stay hidden from all clients (excluded implicitly —
+ *   Internal never matches either kept type below).
+ *
+ * Extracted 2026-07-22 as a single shared helper (previously inline only in
+ * api_clientGetPost) specifically because this is the privacy-critical rule,
+ * unlike the Local-vs-bulk post-visibility checks (isPostVisibleToClient_ /
+ * api_clientGetAllPosts), which stay deliberately separate per the 2026-07-09
+ * decision — those diverge for a real performance reason (single-post vs.
+ * bulk-list access patterns), whereas this is a pure filter with no such
+ * tradeoff, and duplicating a privacy rule is a real regression risk (see
+ * the pre-Stage-1 bug this rule itself was written to fix).
+ * @param {Array<Object>} comments - from dsGetCommentsForPost
+ * @param {string} accessLevel - CONFIG.ACCESS_LEVELS.LOCAL or .CORPORATE
+ * @return {Array<Object>}
+ */
+function filterCommentsForRole_(comments, accessLevel) {
+  var isCorp = accessLevel === CONFIG.ACCESS_LEVELS.CORPORATE;
+  return comments.filter(function (c) {
+    if (c.Comment_Type === CONFIG.COMMENT_TYPES.CORPORATE_REPLY) return true;
+    return !isCorp && c.Comment_Type === CONFIG.COMMENT_TYPES.CLIENT_REPLY;
+  });
+}
+
+/**
+ * Filters a post's approval history down to what a given client access level
+ * is allowed to see in the review trail. Mirrors filterCommentsForRole_'s
+ * asymmetric rule (Section 11): Corporate sees ONLY Corporate-stage decision
+ * events, never a Local-stage line, even the bare "requested changes" or
+ * "approved" line with no note attached. Local sees both stages, since Local
+ * (Ali) is the liaison to Corporate.
+ * Fixed 2026-07-23 (Version 65/66, made live in the Apps Script editor,
+ * ported back here): the Stage 4 reviewer export previously passed every
+ * approval record into the document unfiltered by role.
+ * @param {Array<Object>} approvals - dsGetApprovalsForPost() rows
+ * @param {string} accessLevel - CONFIG.ACCESS_LEVELS.LOCAL or .CORPORATE
+ * @return {Array<Object>}
+ */
+function filterApprovalsForRole_(approvals, accessLevel) {
+  var isCorp = accessLevel === CONFIG.ACCESS_LEVELS.CORPORATE;
+  if (!isCorp) return approvals;
+  return approvals.filter(function (a) {
+    return String(a.Stage) === CONFIG.STAGES.CORPORATE;
+  });
 }
 
 /**
@@ -1429,7 +1472,146 @@ function api_clientGetPost(token, postId) {
  * @param {Object} client - Authorized_Clients row
  * @return {boolean}
  */
+/**
+ * Data layer for the Stage 4 reviewer Word export (build spec 2026-07-14).
+ * Returns every post visible to a given reviewer within a date range, each
+ * joined with its version snapshots, full approval history, role-scoped
+ * comments, and any permanent final-asset copies. No document rendering
+ * here — this exists so the filtering/joining can be sanity-checked on its
+ * own (see debugReviewerExportCounts_) before any doc-building or portal UI
+ * is written.
+ *
+ * Post-visibility filtering deliberately reuses the exact bulk lookup
+ * api_clientGetAllPosts already uses (corpReviewedIds + the per-role allowed-
+ * statuses list), rather than a third separate implementation — this export
+ * is bulk-shaped (many posts across a date range) like the list endpoint,
+ * not single-post-shaped like api_clientGetPost/isPostVisibleToClient_, so
+ * the 2026-07-09 rationale for keeping those two separate doesn't apply
+ * here. MJ confirmed this approach 2026-07-22.
+ *
+ * @param {Object} client - Authorized_Clients row (from requireClient_)
+ * @param {Date} startDate - inclusive, literal calendar date (see parseCalendarDate_)
+ * @param {Date} endDate - inclusive
+ * @return {Array<{post:Object, versions:Array, approvals:Array, comments:Array, finalAssets:Array}>}
+ */
+function getReviewerExportPosts_(client, startDate, endDate) {
+  var isCorp = client.Access_Level === CONFIG.ACCESS_LEVELS.CORPORATE;
+
+  var corpReviewedIds = null;
+  if (isCorp) {
+    corpReviewedIds = {};
+    var approvalData = readSheet_(CONFIG.SHEETS.APPROVALS);
+    approvalData.rows.forEach(function (r) {
+      if (String(r.Stage) === CONFIG.STAGES.CORPORATE) {
+        corpReviewedIds[String(r.Post_ID)] = true;
+      }
+    });
+  }
+
+  var visible = isCorp
+    ? [CONFIG.STATUSES.CORPORATE, CONFIG.STATUSES.APPROVED, CONFIG.STATUSES.PUBLISHED]
+    : [CONFIG.STATUSES.LOCAL_CLIENT, CONFIG.STATUSES.REVISING,
+       CONFIG.STATUSES.AWAITING_CORPORATE, CONFIG.STATUSES.CORPORATE,
+       CONFIG.STATUSES.APPROVED, CONFIG.STATUSES.PUBLISHED];
+  var allowed = {};
+  visible.forEach(function (s) { allowed[s] = true; });
+
+  var posts = dsGetAllPosts()
+    .filter(function (p) {
+      // Is_Test posts (2026-07-22) are agency-only fixtures, never in a
+      // reviewer's own real export either.
+      if (p.Is_Test) return false;
+      var d = parseCalendarDate_(p.Scheduled_Date);
+      if (!d || d < startDate || d > endDate) return false;
+      if (p.Status === CONFIG.STATUSES.REVISING && isCorp) {
+        return !!(corpReviewedIds && corpReviewedIds[p.ID]);
+      }
+      return !!allowed[p.Status];
+    })
+    .sort(function (a, b) {
+      return parseCalendarDate_(a.Scheduled_Date) - parseCalendarDate_(b.Scheduled_Date);
+    });
+
+  return posts.map(function (post) {
+    return {
+      post: stripInternalFields_(post),
+      versions: dsGetPostVersions(post.ID),
+      approvals: filterApprovalsForRole_(dsGetApprovalsForPost(post.ID), client.Access_Level),
+      comments: filterCommentsForRole_(dsGetCommentsForPost(post.ID), client.Access_Level),
+      finalAssets: dsGetFinalAssetsForPost(post.ID)
+    };
+  });
+}
+
+/**
+ * Manual sanity-check for getReviewerExportPosts_, run directly from the
+ * Apps Script editor (select this function, click Run) — no portal UI or
+ * document builder exists yet, so this is the only way to inspect the
+ * filtered/joined data before that's built. Logs one line per post; view
+ * results in Executions (View > Executions) or via the return value there.
+ * @param {string} token - a real reviewer token (Local or Corporate)
+ * @param {string} startDateStr - 'yyyy-MM-dd'
+ * @param {string} endDateStr - 'yyyy-MM-dd'
+ * @return {Array<Object>} one summary object per post
+ */
+function debugReviewerExportCounts_(token, startDateStr, endDateStr) {
+  var client = requireClient_(token);
+  var start = parseCalendarDate_(startDateStr);
+  var end = parseCalendarDate_(endDateStr);
+  if (!start || !end) throw new Error('Bad date(s): ' + startDateStr + ' / ' + endDateStr);
+
+  var rows = getReviewerExportPosts_(client, start, end);
+  var summary = rows.map(function (r) {
+    return {
+      Post_ID: r.post.ID,
+      Title: r.post.Title,
+      Status: r.post.Status,
+      Scheduled_Date: r.post.Scheduled_Date,
+      versionCount: r.versions.length,
+      approvalCount: r.approvals.length,
+      commentCount: r.comments.length,
+      finalAssetCount: r.finalAssets.length
+    };
+  });
+
+  Logger.log('Reviewer: %s (%s) — %s post(s) in range %s to %s',
+    client.Email, client.Access_Level, summary.length, startDateStr, endDateStr);
+  summary.forEach(function (s) {
+    Logger.log('%s | %s | %s | scheduled %s | versions=%s approvals=%s comments=%s finalAssets=%s',
+      s.Post_ID, s.Title, s.Status, s.Scheduled_Date,
+      s.versionCount, s.approvalCount, s.commentCount, s.finalAssetCount);
+  });
+
+  return summary;
+}
+
+/**
+ * Manual test runner for debugReviewerExportCounts_ — the Apps Script editor's
+ * Run button cannot pass arguments to a function, so this wrapper hardcodes
+ * them instead. EDIT THE THREE VALUES BELOW, then select THIS function
+ * (runDebugReviewerExport, not debugReviewerExportCounts_ itself) in the Run
+ * dropdown and click Run. Check View > Executions, or the Execution log
+ * panel, for the logged output.
+ *
+ * Deliberately named WITHOUT a trailing underscore, unlike every other
+ * helper added today — Apps Script hides any function ending in "_" from
+ * the editor's "Select function" run dropdown (private-by-convention), which
+ * is exactly why this was invisible before. This is the one function in
+ * today's additions actually meant to be picked from that dropdown by hand.
+ */
+function runDebugReviewerExport() {
+  var token = 'BtVHWPKxZQkbE526FnbLiQ0bZdHSm0Pr'; // aloha_aina@icloud.com (Local test account)
+  var startDateStr = '2026-07-01';
+  var endDateStr = '2026-07-31';
+  debugReviewerExportCounts_(token, startDateStr, endDateStr);
+}
+
 function isPostVisibleToClient_(post, client) {
+  // Is_Test posts (2026-07-22) are fixture/regression-test data for the agency
+  // only — never visible to a real reviewer, regardless of status. Checked
+  // first so a test post mid-review can never leak through the status rules
+  // below just because it happens to be sitting in a client-visible status.
+  if (post.Is_Test) return false;
   var isCorp = client.Access_Level === CONFIG.ACCESS_LEVELS.CORPORATE;
   if (post.Status === CONFIG.STATUSES.REVISING && isCorp) {
     // Only visible to corporate if they've already submitted a decision at their stage —
@@ -1958,4 +2140,334 @@ function exportGoogleDocAsDocx_(fileId) {
     throw new Error('Could not convert the export to Word format (HTTP ' + resp.getResponseCode() + '). Try again, or check Drive permissions.');
   }
   return resp.getBlob().setName('export.docx');
+}
+
+// ---------------------------------------------------------------------------
+// Stage 4 — reviewer Word export, piece 2: document body builder
+// (build spec 2026-07-14). Reuses appendPostMediaToDoc_, appendOneMediaAsset_,
+// parseCalendarDate_, formatCalendarDate_, and exportGoogleDocAsDocx_ from the
+// existing agency export above rather than duplicating them — the per-post
+// content here is just much richer (Section 4: original version, trail,
+// resubmissions, final version), which is why it's a separate body builder
+// rather than an extension of buildCalendarDocBody_ itself.
+// ---------------------------------------------------------------------------
+
+/**
+ * Human-readable status labels for the reviewer document. Deliberately a
+ * separate, neutral/factual set from ClientPortal.html's STATUS_LABELS_LOCAL/
+ * _CORP (those are active-voice UI copy — "Your review needed" — which reads
+ * oddly as a historical record entry next to a timestamp). Not shared with
+ * the client-side labels because Code.gs (server) and the .html files
+ * (browser) don't share JS scope in Apps Script.
+ */
+var EXPORT_STATUS_LABELS_ = {
+  Local_Client_Review: 'Local review in progress',
+  Awaiting_Corporate: 'Awaiting send to Corporate',
+  Corporate_Review: 'Corporate review in progress',
+  Revising: 'Revisions requested',
+  Approved: 'Approved',
+  Published: 'Published'
+};
+
+function humanStatusForExport_(status) {
+  return EXPORT_STATUS_LABELS_[status] || String(status || '').replace(/_/g, ' ');
+}
+
+/** CONFIG.STAGES values are 'Local_Client'/'Corporate' — shown as 'Local'/'Corporate'. */
+function stageLabelForExport_(stage) {
+  return stage === CONFIG.STAGES.CORPORATE ? 'Corporate' : 'Local';
+}
+
+/**
+ * Formats a Decision_Date/Created_Date/Retention_Date value into a
+ * human-readable timestamp for the document. Input is normally the
+ * 'yyyy-MM-dd HH:mm:ss' string produced by serializeRow_, but a raw Date is
+ * accepted too. HST is hardcoded rather than looked up — CONFIG.TIMEZONE is
+ * Pacific/Honolulu, which has no DST, so this never varies. Mirrors the same
+ * string-or-Date handling already proven in approvalSortTime_ (DataService.gs).
+ * @param {string|Date} rawValue
+ * @return {string}
+ */
+function formatTimestampForDoc_(rawValue) {
+  if (!rawValue) return 'date unknown';
+  var d = (rawValue instanceof Date) ? rawValue : new Date(rawValue);
+  if (isNaN(d.getTime())) return String(rawValue);
+  return Utilities.formatDate(d, CONFIG.TIMEZONE, 'MMM d, yyyy, h:mm a') + ' HST';
+}
+
+/**
+ * Appends one Post_Versions snapshot (labeled "Original" or "Resubmission N")
+ * to the doc: a heading with its timestamp, the copy text, and its media.
+ * Reuses appendPostMediaToDoc_ directly — a version row carries the exact
+ * same media field names (LinkedIn_URL/Facebook_URL/Instagram_URL/
+ * Carousel_URLs/Media_URL) as a Posts row, by design (see writePostVersion_).
+ * @param {GoogleAppsScript.Document.Body} body
+ * @param {string} label
+ * @param {Object} version - a dsGetPostVersions() row
+ */
+function appendVersionSection_(body, label, version) {
+  var copy = body.appendParagraph(version.Post_Copy || '(no post copy on record)').editAsText();
+  copy.setFontSize(10);
+
+  appendPostMediaToDoc_(body, version);
+
+  var caption = body.appendParagraph(label + ' — ' + formatTimestampForDoc_(version.Created_Date)).editAsText();
+  caption.setFontSize(9);
+  caption.setItalic(true);
+  caption.setForegroundColor('#666666');
+}
+
+/**
+ * Appends the chronological review/change/approval trail for one post
+ * (Section 4, item 3). Merges two different sources into a single timeline:
+ *   - Post_Approvals rows (Approved/Changes_Requested only — a still-Pending
+ *     row isn't a decided event yet, so it's skipped) — already role-scoped
+ *     by the caller via filterApprovalsForRole_ before reaching here (see
+ *     getReviewerExportPosts_): Corporate never receives a Local-stage row
+ *     here at all, not even the bare event line with no note (fixed 2026-07-23).
+ *   - Comments (already role-scoped by the caller via filterCommentsForRole_
+ *     before reaching here — see getReviewerExportPosts_) — only the
+ *     comment TEXT is conversation-scoped, per Section 11; the merge here
+ *     doesn't need to re-apply any scoping itself.
+ * Reuses approvalSortTime_ (DataService.gs) for approval timestamps, so the
+ * "pick the latest/order by time" logic stays in exactly one place, per the
+ * lesson from the 2026-07-21 digest-email bug (sorting by raw row order
+ * instead of an explicit timestamp).
+ * @param {GoogleAppsScript.Document.Body} body
+ * @param {Array<Object>} approvals - dsGetApprovalsForPost() rows
+ * @param {Array<Object>} comments - already role-scoped
+ */
+function appendTrailSection_(body, approvals, comments) {
+  var trailHeading = body.appendParagraph('Review and change trail');
+  trailHeading.setHeading(DocumentApp.ParagraphHeading.HEADING3);
+  trailHeading.editAsText().setFontSize(11);
+
+  var entries = [];
+  approvals.forEach(function (a) {
+    if (a.Approval_Status !== CONFIG.APPROVAL_STATUSES.APPROVED &&
+        a.Approval_Status !== CONFIG.APPROVAL_STATUSES.CHANGES_REQUESTED) {
+      return;
+    }
+    var verb = (a.Approval_Status === CONFIG.APPROVAL_STATUSES.APPROVED) ? 'approved' : 'requested changes';
+    var line = (a.Approver_Name || a.Approver_Email) + ' ' + verb +
+      ' (' + stageLabelForExport_(a.Stage) + ' review) — ' + formatTimestampForDoc_(a.Decision_Date);
+    if (a.Decision_Notes) line += ': “' + a.Decision_Notes + '”';
+    entries.push({ sortTime: approvalSortTime_(a), text: line });
+  });
+  comments.forEach(function (c) {
+    var t = c.Created_Date ? new Date(c.Created_Date).getTime() : 0;
+    var line = (c.Author_Name || c.Author_Email) + ' — ' + formatTimestampForDoc_(c.Created_Date) +
+      ': “' + c.Comment_Text + '”';
+    entries.push({ sortTime: isNaN(t) ? 0 : t, text: line });
+  });
+  entries.sort(function (x, y) { return x.sortTime - y.sortTime; });
+
+  if (!entries.length) {
+    var none = body.appendParagraph('No review activity on record yet.').editAsText();
+    none.setFontSize(9);
+    none.setForegroundColor('#999999');
+    return;
+  }
+  entries.forEach(function (e) {
+    var p = body.appendParagraph('• ' + e.text).editAsText();
+    p.setFontSize(10);
+  });
+}
+
+/**
+ * Body builder for the Stage 4 reviewer Word export (build spec 2026-07-14,
+ * Section 4). Cover section first (title, reviewer, range, generated-on
+ * timestamp, point-in-time disclaimer), then per post in date order: identity
+ * + current status + retention flag if any, the Original version, the
+ * chronological trail, any Resubmission versions, and the Final version
+ * embedded from its permanent Drive copy (Post_Final_Assets) rather than the
+ * live link, so it survives a broken share link later.
+ * @param {GoogleAppsScript.Document.Document} doc
+ * @param {Array<{post:Object, versions:Array, approvals:Array, comments:Array, finalAssets:Array}>} rows
+ *   - from getReviewerExportPosts_, already sorted oldest-scheduled-first
+ * @param {string} rangeLabel
+ * @param {Object} client - Authorized_Clients row, for the cover page's reviewer name
+ */
+function buildReviewerExportDocBody_(doc, rows, rangeLabel, client) {
+  var body = doc.getBody();
+  body.setMarginTop(40).setMarginBottom(40).setMarginLeft(56).setMarginRight(56);
+
+  var title = body.getParagraphs()[0];
+  title.setHeading(DocumentApp.ParagraphHeading.TITLE);
+  title.editAsText().setText('IES-TEXA Social Media Approval Record').setFontSize(16).setBold(true);
+
+  var reviewerLabel = (client.Access_Level === CONFIG.ACCESS_LEVELS.CORPORATE ? 'Corporate' : 'Local') + ' reviewer: ';
+  var reviewerLine = body.appendParagraph(reviewerLabel + (dsClientDisplayName(client) || client.Email));
+  reviewerLine.editAsText().setFontSize(11);
+
+  var rangeLine = body.appendParagraph('Date range covered: ' + rangeLabel);
+  rangeLine.editAsText().setFontSize(11);
+
+  var generatedAt = formatTimestampForDoc_(new Date());
+  var generatedLine = body.appendParagraph('Generated on: ' + generatedAt);
+  generatedLine.editAsText().setFontSize(11);
+
+  var disclaimer = body.appendParagraph(
+    'This is a point-in-time snapshot generated on ' + generatedAt + '. Activity after this time is not included.');
+  var disclaimerText = disclaimer.editAsText();
+  disclaimerText.setFontSize(9);
+  disclaimerText.setItalic(true);
+  disclaimerText.setForegroundColor('#666666');
+
+  if (!rows.length) {
+    var empty = body.appendParagraph('No posts were shared with you in this date range.').editAsText();
+    empty.setFontSize(10);
+    return;
+  }
+
+  rows.forEach(function (row) {
+    body.appendHorizontalRule();
+    var post = row.post;
+
+    // Facts about the post's current state lead each section (identity +
+    // retention flag if any), followed immediately by the Title and its
+    // content (Original version copy/media) with nothing in between — MJ's
+    // call (2026-07-23): title and copy "go together" and should read as one
+    // continuous block, with the version label demoted to a small trailing
+    // caption rather than a heading that used to sit between them.
+    var scheduledDate = parseCalendarDate_(post.Scheduled_Date);
+    var scheduledLabel = scheduledDate ? formatCalendarDate_(scheduledDate) : '(no date on record)';
+    var identity = body.appendParagraph(
+      'Platform(s): ' + (post.Platform || '—') +
+      '   |   Scheduled: ' + scheduledLabel +
+      '   |   Status: ' + humanStatusForExport_(post.Status));
+    identity.editAsText().setFontSize(10);
+
+    if (post.Retention_Status) {
+      var retentionLine = body.appendParagraph(
+        post.Retention_Status + ' on ' + formatTimestampForDoc_(post.Retention_Date));
+      var rt = retentionLine.editAsText();
+      rt.setFontSize(10);
+      rt.setBold(true);
+      rt.setForegroundColor('#B91C1C');
+    }
+
+    var titleHeading = body.appendParagraph(post.Title || '(untitled)');
+    titleHeading.setHeading(DocumentApp.ParagraphHeading.HEADING2);
+    titleHeading.editAsText().setFontSize(13);
+
+    var original = row.versions.filter(function (v) { return v.Version_Label === 'Original'; })[0];
+    if (original) {
+      appendVersionSection_(body, 'Original submitted version', original);
+    } else {
+      // No snapshot exists — this post reached a client-visible status before
+      // Stage 2 (2026-07-21) shipped, or was set there directly (e.g. a bulk
+      // content import), so the snapshot hook never fired for it. Confirmed
+      // 2026-07-23: MJ's real August content is in exactly this state. There
+      // is no way to recover the true original content, so rather than leave
+      // a blank gap, fall back to the post's current live fields — captioned
+      // honestly rather than mislabeled as a verified dated "Original".
+      var fallbackCopy = body.appendParagraph(post.Post_Copy || '(no post copy on record)').editAsText();
+      fallbackCopy.setFontSize(10);
+      appendPostMediaToDoc_(body, post);
+      var fallbackCaption = body.appendParagraph(
+        'Current version shown — no dated submission snapshot is on record for this post.').editAsText();
+      fallbackCaption.setFontSize(9);
+      fallbackCaption.setItalic(true);
+      fallbackCaption.setForegroundColor('#666666');
+    }
+
+    appendTrailSection_(body, row.approvals, row.comments);
+
+    var resubmissions = row.versions.filter(function (v) { return v.Version_Label !== 'Original'; });
+    if (resubmissions.length) {
+      var resubHeading = body.appendParagraph('Resubmitted versions');
+      resubHeading.setHeading(DocumentApp.ParagraphHeading.HEADING3);
+      resubHeading.editAsText().setFontSize(11);
+      resubmissions.forEach(function (v) {
+        appendVersionSection_(body, v.Version_Label, v);
+      });
+    }
+
+    if (row.finalAssets.length) {
+      var finalCopy = body.appendParagraph(post.Post_Copy || '(no post copy on record)').editAsText();
+      finalCopy.setFontSize(10);
+      row.finalAssets.forEach(function (asset) {
+        if (asset.Stored_File_Url) {
+          appendOneMediaAsset_(body, asset.Stored_File_Url);
+        } else {
+          var missing = body.appendParagraph(
+            '(' + asset.Source_Field + ': permanent copy could not be saved — original link: ' +
+            (asset.Original_URL || 'none') + ')').editAsText();
+          missing.setFontSize(9);
+          missing.setForegroundColor('#999999');
+        }
+      });
+      var finalCaption = body.appendParagraph(
+        'Final approved version — ' + formatTimestampForDoc_(row.finalAssets[0].Created_Date)).editAsText();
+      finalCaption.setFontSize(9);
+      finalCaption.setItalic(true);
+      finalCaption.setForegroundColor('#666666');
+    }
+  });
+}
+
+/**
+ * Real endpoint for the Stage 4 reviewer Word export. Mirrors
+ * api_exportCalendarToDocx's exact pattern (temp Google Doc -> docx bytes ->
+ * trash the temp doc), scoped to one reviewer's visible posts via
+ * getReviewerExportPosts_ and rendered with buildReviewerExportDocBody_
+ * instead of the agency's simpler calendar body. Not yet wired to any portal
+ * button (that's piece 3) — exists now so the rendering can be sanity-checked
+ * via runGenerateSampleReviewerDoc before the UI is built.
+ * @param {string} token
+ * @param {string} startDateStr - 'yyyy-MM-dd'
+ * @param {string} endDateStr - 'yyyy-MM-dd'
+ * @return {{filename: string, base64: string}}
+ */
+function api_clientExportToDocx(token, startDateStr, endDateStr) {
+  var client = requireClient_(token);
+  var start = parseCalendarDate_(startDateStr);
+  var end = parseCalendarDate_(endDateStr);
+  if (!start || !end) throw new Error('Choose a valid start and end date.');
+  if (start > end) throw new Error('Start date must be on or before the end date.');
+
+  var rows = getReviewerExportPosts_(client, start, end);
+  var rangeLabel = formatCalendarDate_(start) + ' to ' + formatCalendarDate_(end);
+  var doc = DocumentApp.create('IES-TEXA Reviewer Export ' + rangeLabel + ' (temp)');
+  var docId = doc.getId();
+
+  try {
+    buildReviewerExportDocBody_(doc, rows, rangeLabel, client);
+    doc.saveAndClose();
+    var docxBlob = exportGoogleDocAsDocx_(docId);
+    return {
+      filename: 'IES-TEXA Approval Record ' + rangeLabel + '.docx',
+      base64: Utilities.base64Encode(docxBlob.getBytes())
+    };
+  } finally {
+    try { DriveApp.getFileById(docId).setTrashed(true); } catch (cleanupErr) { /* best effort */ }
+  }
+}
+
+/**
+ * Manual sample generator so the document's rendering can be reviewed before
+ * the portal button (piece 3) exists. EDIT THE THREE VALUES BELOW to a real
+ * token and date range, select THIS function (not api_clientExportToDocx) in
+ * the Run dropdown, click Run, then check View > Executions for the doc's
+ * URL and open it directly. Deliberately does NOT trash the doc afterward
+ * (unlike the real endpoint above) so there's something to look at — delete
+ * it from Drive yourself once reviewed; each run creates a new one.
+ */
+function runGenerateSampleReviewerDoc() {
+  var token = 'BtVHWPKxZQkbE526FnbLiQ0bZdHSm0Pr'; // aloha_aina@icloud.com (Local test account)
+  var startDateStr = '2026-07-01';
+  var endDateStr = '2026-08-30';
+
+  var client = requireClient_(token);
+  var start = parseCalendarDate_(startDateStr);
+  var end = parseCalendarDate_(endDateStr);
+  var rows = getReviewerExportPosts_(client, start, end);
+  var rangeLabel = formatCalendarDate_(start) + ' to ' + formatCalendarDate_(end);
+
+  var doc = DocumentApp.create('SAMPLE Reviewer Export — ' + client.Access_Level + ' — ' + rangeLabel);
+  buildReviewerExportDocBody_(doc, rows, rangeLabel, client);
+  doc.saveAndClose();
+
+  Logger.log('Sample doc created (%s post(s)) — open it here: %s', rows.length, doc.getUrl());
 }

@@ -443,6 +443,12 @@
         <label for="fNotes">Internal notes</label>
         <textarea id="fNotes" rows="3" placeholder="Agency-only notes…"></textarea>
       </div>
+      <div class="field" style="margin-bottom:10px;">
+        <label style="display:flex;align-items:center;gap:6px;font-weight:normal;">
+          <input type="checkbox" id="fIsTest" style="width:auto;">
+          Test post (fixture/regression data — always hidden from Ali and Corporate, regardless of status)
+        </label>
+      </div>
       <div id="internalComments"></div>
       <div style="display:flex;gap:8px;margin-top:8px;">
         <input type="text" id="newInternalComment" placeholder="Add internal comment…"
@@ -884,6 +890,14 @@
         esc(p.Retention_Status) + '</span>'
       : '';
     isDone = isDone || !!p.Retention_Status;
+    // Is_Test badge (2026-07-22): agency-only marker for fixture/regression-test
+    // posts (never sent to a real reviewer, see isPostVisibleToClient_ and
+    // api_clientGetAllPosts). Deliberately NOT folded into isDone/muting — a
+    // test post should still look and act like a normal, interactive card, just
+    // clearly tagged, so agency doesn't mistake it for real client work.
+    var testBadge = p.Is_Test
+      ? '<span class="badge" style="background:#EA580C;color:#fff;margin-left:6px;">TEST</span>'
+      : '';
     // Revising uses bright yellow — needs dark text for readability.
     var badgeTextColor = '#ffffff';   // teal Revising (#0D9488) uses white text
     var cardStyle = 'border-left-color:' + color + ';' + (isDone ? 'opacity:0.55;' : '');
@@ -891,7 +905,7 @@
       '<div class="pc-title">' + esc(p.Title || '(untitled)') + '</div>' +
       '<div class="pc-meta">' +
       '<span class="badge" style="background:' + color + ';color:' + badgeTextColor + ';">' + esc(STATUS_LABELS[p.Status] || p.Status) + '</span>' +
-      retentionBadge + icons + '</div>' + thumb + publishBtn + unpublishBtn + deleteBtn + restoreBtn + '</div>';
+      retentionBadge + testBadge + icons + '</div>' + thumb + publishBtn + unpublishBtn + deleteBtn + restoreBtn + '</div>';
   }
 
   // ------------------------------------------------------------------
@@ -959,7 +973,11 @@
   }
 
   function fillPanel(post, approvals, comments) {
-    $('panelTitle').textContent = post.ID ? (post.ID + ' — Edit post') : 'New post';
+    // Is_Test posts (2026-07-22) get a plain-text [TEST] tag in the panel
+    // title too, not just the calendar card badge, so it's obvious even once
+    // the card itself is out of view.
+    var testTag = post.Is_Test ? '[TEST] ' : '';
+    $('panelTitle').textContent = post.ID ? (testTag + post.ID + ' — Edit post') : 'New post';
     $('fTitle').value = post.Title || '';
     $('fCopy').value = post.Post_Copy || '';
     $('fLinkedIn').value = post.LinkedIn_URL || '';
@@ -967,6 +985,7 @@
     $('fInstagram').value = post.Instagram_URL || '';
     $('fCarousel').value = post.Carousel_URLs || '';
     $('fNotes').value = post.Internal_Notes || '';
+    $('fIsTest').checked = !!post.Is_Test;
 
     var d = parseDateOnly(post.Scheduled_Date);
     $('fDate').value = d ? ymd(d) : '';
@@ -1091,7 +1110,8 @@
       Carousel_URLs: $('fCarousel').value.trim(),
       Scheduled_Date: $('fDate').value,
       Internal_Notes: $('fNotes').value,
-      Status: $('fStatus').value
+      Status: $('fStatus').value,
+      Is_Test: $('fIsTest').checked ? 'TRUE' : ''
     };
   }
 
